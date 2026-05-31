@@ -3,7 +3,8 @@
 **Contribution Number:** 1  
 **Student:** Adiba Akter  
 **Issue:** https://github.com/meltano/sdk/issues/2516  
-**Status:** Phase I In Progress
+**Fork:** https://github.com/AdibaAdi/sdk
+**Status:** Phase I Complete
 
 ---
 
