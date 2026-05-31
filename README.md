@@ -1,15 +1,17 @@
-# Contribution [#]: [Issue Title]
+# Contribution 1: Log all JSON schema validation errors in sinks/targets
 
-**Contribution Number:** [1 / 2 / 3]  
-**Student:** [Your Name]  
-**Issue:** [GitHub issue link]  
-**Status:** [Phase I / Phase II / Phase III / Phase IV] [In Progress / Complete]
+**Contribution Number:** 1  
+**Student:** Adiba Akter  
+**Issue:** https://github.com/meltano/sdk/issues/2516  
+**Status:** Phase I In Progress
 
 ---
 
 ## Why I Chose This Issue
 
-[1-2 paragraphs explaining why this issue interests you, how it matches your skills/learning goals, what you hope to learn]
+I chose this issue because it connects directly to data pipeline reliability, schema validation, and clearer error reporting. Since I am interested in data analytics, backend systems, and AI/data platform work, this issue gives me a chance to understand how a real open-source SDK validates records and reports errors to developers.
+
+The current problem is that JSON schema validation appears to report only one validation error at a time, which can make debugging sink or target records slower. A better solution would surface all relevant validation errors in a way that matches the project’s existing error handling and testing patterns.
 
 ---
 
