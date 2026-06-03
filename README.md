@@ -1,18 +1,18 @@
-# Contribution 1: Log all JSON schema validation errors in sinks/targets
+# Contribution 1: Respect GH_HOST in GitHub Gist resolution
 
 **Contribution Number:** 1  
 **Student:** Adiba Akter  
-**Issue:** https://github.com/meltano/sdk/issues/2516  
-**Fork:** https://github.com/AdibaAdi/sdk
+**Issue:** https://github.com/astral-sh/uv/issues/15109  
+**Fork:** https://github.com/AdibaAdi/uv  
 **Status:** Phase I Complete
 
 ---
 
 ## Why I Chose This Issue
 
-I chose this issue because it connects directly to data pipeline reliability, schema validation, and clearer error reporting. Since I am interested in data analytics, backend systems, and AI/data platform work, this issue gives me a chance to understand how a real open-source SDK validates records and reports errors to developers.
+I chose this issue because it gives me the chance to work with Rust in a real, high-impact open-source project while still connecting to Python tooling, which is directly relevant to my background and career goals. The issue is about making uv respect the `GH_HOST` environment variable when resolving GitHub Gist URLs, which matters for users working with GitHub Enterprise or custom GitHub hosts.
 
-The current problem is that JSON schema validation appears to report only one validation error at a time, which can make debugging sink or target records slower. A better solution would surface all relevant validation errors in a way that matches the project’s existing error handling and testing patterns.
+This issue interests me because it combines CLI behavior, environment variable handling, URL resolution, and developer workflow support. Since uv is a widely used Python tooling project, contributing here would help me learn how production-level developer tools handle configuration and compatibility across different environments.
 
 ---
 
@@ -20,19 +20,19 @@ The current problem is that JSON schema validation appears to report only one va
 
 ### Problem Description
 
-[In your own words, what's broken or missing?]
+uv currently supports resolving GitHub Gist URLs, but the issue asks for support for the `GH_HOST` environment variable when resolving Gists. This would make uv work better for users who use GitHub Enterprise or custom GitHub hosts, similar to how the GitHub CLI supports host configuration.
 
 ### Expected Behavior
 
-[What should happen?]
+When a user sets `GH_HOST`, uv should use that configured GitHub host while resolving GitHub Gist URLs, instead of assuming the default public GitHub host.
 
 ### Current Behavior
 
-[What actually happens?]
+Based on the issue, uv does not currently respect `GH_HOST` for GitHub Gist resolution. This means users working with GitHub Enterprise Gists may not get the expected behavior.
 
 ### Affected Components
 
-[Which parts of the codebase are involved?]
+The likely affected components are the parts of uv that handle GitHub Gist URL parsing, GitHub host resolution, environment variable configuration, and related tests.
 
 ---
 
