@@ -1,18 +1,18 @@
-# Contribution 1: Respect GH_HOST in GitHub Gist resolution
+# Contribution 1: Add Expression scripting support for knn_vector
 
 **Contribution Number:** 1  
 **Student:** Adiba Akter  
-**Issue:** https://github.com/astral-sh/uv/issues/15109  
-**Fork:** https://github.com/AdibaAdi/uv  
+**Issue:** https://github.com/opensearch-project/k-NN/issues/459  
+**Fork:** https://github.com/AdibaAdi/k-NN  
 **Status:** Phase I Complete
 
 ---
 
 ## Why I Chose This Issue
 
-I chose this issue because it gives me the chance to work with Rust in a real, high-impact open-source project while still connecting to Python tooling, which is directly relevant to my background and career goals. The issue is about making uv respect the `GH_HOST` environment variable when resolving GitHub Gist URLs, which matters for users working with GitHub Enterprise or custom GitHub hosts.
+I chose this issue because it connects directly to vector search, OpenSearch, scripting engines and backend search infrastructure. Since I am interested in software engineering work involving data systems and AI infrastructure, this issue gives me a chance to understand how a real search engine plugin handles vector field behavior across different scripting languages.
 
-This issue interests me because it combines CLI behavior, environment variable handling, URL resolution, and developer workflow support. Since uv is a widely used Python tooling project, contributing here would help me learn how production-level developer tools handle configuration and compatibility across different environments.
+The issue asks for Mustache and Expression scripting support for the `knn_vector` field. I noticed there is already an open PR focused on Mustache support, so my planned scope is to investigate the remaining Expression scripting behavior and understand what is missing compared with the existing painless scripting path.
 
 ---
 
@@ -20,19 +20,19 @@ This issue interests me because it combines CLI behavior, environment variable h
 
 ### Problem Description
 
-uv currently supports resolving GitHub Gist URLs, but the issue asks for support for the `GH_HOST` environment variable when resolving Gists. This would make uv work better for users who use GitHub Enterprise or custom GitHub hosts, similar to how the GitHub CLI supports host configuration.
+OpenSearch k-NN currently supports painless scripting with the `knn_vector` field type, but the issue asks for support across other OpenSearch scripting languages as well. Since Mustache support already has an open PR, the remaining useful scope appears to be understanding and potentially adding Expression scripting support for `knn_vector`.
 
 ### Expected Behavior
 
-When a user sets `GH_HOST`, uv should use that configured GitHub host while resolving GitHub Gist URLs, instead of assuming the default public GitHub host.
+Users should be able to use the `knn_vector` field with supported OpenSearch scripting behavior beyond only painless scripting, specifically Expression scripting if that scope is still valid for the project.
 
 ### Current Behavior
 
-Based on the issue, uv does not currently respect `GH_HOST` for GitHub Gist resolution. This means users working with GitHub Enterprise Gists may not get the expected behavior.
+Based on the issue, `knn_vector` scripting support is currently limited and does not fully support the other scripting languages mentioned in the issue.
 
 ### Affected Components
 
-The likely affected components are the parts of uv that handle GitHub Gist URL parsing, GitHub host resolution, environment variable configuration, and related tests.
+The likely affected components are the k-NN plugin scripting implementation, the existing painless scripting support path, script engine integration and tests around `knn_vector` script behavior.
 
 ---
 
