@@ -4,7 +4,8 @@
 **Student:** Adiba Akter  
 **Issue:** https://github.com/opensearch-project/k-NN/issues/459  
 **Fork:** https://github.com/AdibaAdi/k-NN  
-**Status:** Phase I Complete
+**Branch:** [fix-expression-scripting-knn-vector](https://github.com/AdibaAdi/k-NN/tree/fix-expression-scripting-knn-vector)  
+**Status:** Phase II Complete
 
 ---
 
@@ -40,19 +41,87 @@ The likely affected components are the k-NN plugin scripting implementation, the
 
 ### Environment Setup
 
-[Notes on setting up your local development environment - challenges you faced, how you solved them]
+| Item | Value |
+| --- | --- |
+| OS | macOS, aarch64 (Apple Silicon) |
+| Java toolchain | OpenJDK 21.0.11 (Temurin); `JAVA21_HOME` exported |
+| Gradle wrapper | 9.4.1 |
+| Native toolchain | cmake 4.3.3, openblas, libomp, gflags, gcc (Homebrew) |
+| Submodules | `jni/external/faiss`, `jni/external/nmslib` at pinned commits |
 
-### Steps to Reproduce
+Validation, in order (all passed):
 
-1. [Step 1]
-2. [Step 2]
-3. [Observed result]
+1. **Java 21 configured:** `java`/`javac` report 21.0.11; `JAVA21_HOME` set.
+2. **`./gradlew compileTestJava`:** test sources (including the `KNNRestTestCase` fixtures the reproduction extends) compile under JDK 21.
+3. **Native dependencies installed:** cmake, openblas, libomp, gflags, gcc.
+4. **`./gradlew buildJniLib`:** produced `jni/build/release/libopensearchknn_{faiss,nmslib,common,simd,util}.jnilib`.
+
+> **Environment note:** `buildJniLib` first failed at CMake configure because the repo lived under a path containing spaces. The k-NN CMake scripts pass the patch-file path unquoted, so the shell split it. Moving the repo to a space-free path fixed it with no source change. This is an environment issue, not a defect in #459.
+
+This is a feature-gap issue, not a crash, so "reproduce" means showing with a minimal, runnable example that an Expression script over a `knn_vector` field is rejected today, and capturing the exact behavior and the stage that produces it.
+
+I mirrored the project's existing Painless test (`PainlessScriptScoreIT.testL2ScriptScore`) and changed only the script language, from Painless to Expression. Holding everything else constant isolates the gap to the Expression path.
+
+1. Build the native libraries: `./gradlew buildJniLib`.
+2. Confirm the Painless harness works (proves cluster, JNI load, and script-scoring path are healthy):
+   ```
+   ./gradlew integTest --tests "org.opensearch.knn.integ.PainlessScriptScoreIT.testL2ScriptScore"
+   ```
+3. Add a minimal Expression test, `ExpressionScriptScoreIT.testExpressionScriptScoreFailsOnKnnVector`, that:
+   - creates a 2-dimensional `knn_vector` index with one document `[1.0, 1.0]`;
+   - runs a `script_score` query with `"lang": "expression"` and source `doc['my_vector'].value` (the Expression-grammar parallel of the Painless `doc['my_vector'].value[0]` that passes today);
+   - asserts HTTP 400 and logs the full error body.
+4. Run only that test:
+   ```
+   ./gradlew integTest --tests "org.opensearch.knn.integ.ExpressionScriptScoreIT.testExpressionScriptScoreFailsOnKnnVector"
+   ```
+
+The only variable changed between the two tests is `lang`: Painless returns 200 OK; Expression returns 400.
 
 ### Reproduction Evidence
 
-- **Commit showing reproduction:** [Link to commit in your fork]
-- **Screenshots/logs:** [If applicable]
-- **My findings:** [What you discovered during reproduction]
+- **Painless baseline (control):** `PainlessScriptScoreIT.testL2ScriptScore` -> **HTTP 200 OK**.
+- **Expression reproduction:** `ExpressionScriptScoreIT.testExpressionScriptScoreFailsOnKnnVector` -> **HTTP 400 Bad Request**.
+
+The Expression test passes precisely because the server rejected the request with the expected 400 (`BUILD SUCCESSFUL`; JUnit `tests="1" skipped="0" failures="0" errors="0"`).
+
+A diagnostic reproduction test was created locally for Phase II evidence and has not been committed.
+
+**Response body captured by the test** (`test_field`/`test_index` are the base-class name constants):
+
+```json
+{
+  "error": {
+    "type": "search_phase_execution_exception",
+    "reason": "all shards failed",
+    "phase": "query",
+    "failed_shards": [
+      {
+        "shard": 0,
+        "index": "test_index",
+        "reason": {
+          "type": "query_shard_exception",
+          "reason": "failed to create query: link error",
+          "caused_by": {
+            "type": "script_exception",
+            "reason": "link error",
+            "script": "doc['test_field'].value",
+            "lang": "expression",
+            "caused_by": {
+              "type": "parse_exception",
+              "reason": "Field [test_field] must be numeric, date, or geopoint"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "status": 400
+}
+```
+
+**Key error:**
+> `Field [test_field] must be numeric, date, or geopoint`
 
 ---
 
@@ -60,30 +129,42 @@ The likely affected components are the k-NN plugin scripting implementation, the
 
 ### Analysis
 
-[Your analysis of the root cause - what's causing the issue?]
+**Expression scripting over a `knn_vector` field fails during field binding / query creation, because `knn_vector` is not a numeric, date, or geopoint field.**
+
+Reading the error chain from the outside in:
+
+1. `query_shard_exception: "failed to create query: link error"` (the failure happens while building the query on the shard, before any document is scored).
+2. `script_exception: "link error"` on `doc['test_field'].value` (the Lucene Expression link/bind phase, where each `doc['...']` variable must resolve to a numeric value source).
+3. `parse_exception: "Field [test_field] must be numeric, date, or geopoint"`. This is the root cause: Expression only binds numeric/date/geopoint fields, and `knn_vector` is none of these.
+
+What this rules out:
+
+- **Not a syntax problem:** `doc['my_vector'].value` is valid Expression syntax; it compiles. The failure is binding, not parsing.
+- **Not a script-execution problem:** query creation fails before any per-document execution.
+
+One architectural observation, **inferred and not yet verified at a specific line:** Painless support for `knn_vector` works because k-NN registers scoring functions into Painless via an allowlist extension (`KNNAllowlistExtension`). Lucene Expressions have no equivalent allowlist mechanism and bind only scalar numeric values, and the rejecting message appears to originate in OpenSearch core (`org.opensearch.script.expression`) rather than the k-NN plugin. If that holds, the honest Phase II finding is a documented structural constraint (Expression's one-numeric-value-per-document contract cannot represent a vector field) rather than a missing feature flag. The exact core source line still needs confirmation.
 
 ### Proposed Solution
 
-[High-level description of your fix approach]
+Based on current evidence I lean toward documenting the structural constraint and, if maintainers agree, surfacing a clearer unsupported-field message for `lang: expression` on `knn_vector`, rather than forcing a feature path the engine may not support. I want to confirm this against OpenSearch core and the issue thread before committing to a direction (see the plan below).
 
 ### Implementation Plan
 
 Using UMPIRE framework (adapted):
 
-**Understand:** [Restate the problem]
+**Understand:** #459 asks for Expression scripting on `knn_vector`. Reproduction shows it is rejected at field binding because the field is non-numeric (HTTP 400, error above).
 
-**Match:** [What similar patterns/solutions exist in the codebase?]
+**Match:** Relevant precedents in the repo: `KNNAllowlistExtension` (how Painless support is wired), `KNNScoringScriptEngine` (k-NN's own `lang: "knn"` engine), and `PainlessScriptScoreIT` (the test pattern to mirror).
 
-**Plan:** [Step-by-step implementation plan]
-1. [Modify file X to do Y]
-2. [Add function Z]
-3. [Update tests]
+**Plan:** Two directions, pending a closer read of core and maintainer input:
+1. *Document the constraint and clarify the error.* If Expression structurally cannot bind a vector field, contribute documentation and, if maintainers agree, a clearer unsupported-field message. Smallest and non-duplicative.
+2. *Investigate a feature path.* Explore whether any numeric binding could be exposed. Higher uncertainty, since Expression has no allowlist mechanism and per-dimension binding may not be meaningful for vector scoring.
 
-**Implement:** [Link to your branch/commits as you work]
+**Implement:** Out of scope for Phase II.
 
-**Review:** [Self-review checklist - does it follow the project's contribution guidelines?]
+**Review:** Re-run the duplicate-work check (issue, open PRs, recent commits) before any code; match local conventions; keep the diff minimal.
 
-**Evaluate:** [How will you verify it works?]
+**Evaluate:** Success means the chosen direction is backed by the reproduction, agreed with maintainers, and covered by a test mirroring the Painless one.
 
 ---
 
@@ -108,9 +189,14 @@ Using UMPIRE framework (adapted):
 
 ## Implementation Notes
 
-### Week [X] Progress
+### Phase II Status
 
-[What you built this week, challenges faced, decisions made]
+* Environment validated: Java 21, `compileTestJava`, native dependencies, `buildJniLib`, and the existing Painless integration test all passed.
+* Gap reproduced: the Expression test returns HTTP 400 with `Field [test_field] must be numeric, date, or geopoint`.
+* Root cause located: failure is at Expression field binding / query creation, because `knn_vector` is not numeric/date/geopoint.
+* No final fix implemented yet.
+* No PR created yet.
+* Next: confirm the producing core source line, then align with maintainers on the issue before any Phase III work.
 
 ### Week [Y] Progress
 
