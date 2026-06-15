@@ -5,7 +5,7 @@
 **Issue:** https://github.com/opensearch-project/k-NN/issues/459  
 **Fork:** https://github.com/AdibaAdi/k-NN  
 **Branch:** [fix-expression-scripting-knn-vector](https://github.com/AdibaAdi/k-NN/tree/fix-expression-scripting-knn-vector)  
-**Status:** Phase II Complete
+**Status:** Phase III Complete — implementation commit pushed, upstream PR not yet opened
 
 ---
 
@@ -170,20 +170,23 @@ Using UMPIRE framework (adapted):
 
 ## Testing Strategy
 
+The Phase III change is an **integration test that guards the current unsupported behavior** of Expression scripting over a `knn_vector` field. It is coverage that pins down and documents the existing rejection; it is **not** an implementation of full Expression scripting support. The test asserts that Expression scripting is rejected for `knn_vector` and fails if that behavior ever silently changes.
+
 ### Unit Tests
 
-- [ ] Test case 1: [Description]
-- [ ] Test case 2: [Description]
-- [ ] Test case 3: [Description]
+- None added. The behavior under test is a request-time field-binding rejection that only surfaces against a running cluster, so it is exercised through an integration test rather than a unit test.
 
 ### Integration Tests
 
-- [ ] Integration scenario 1
-- [ ] Integration scenario 2
+- [x] `org.opensearch.knn.integ.ExpressionScriptScoreIT.testExpressionScriptingUnsupportedOnKnnVector` — creates a `knn_vector` index, issues a `script_score` query with `"lang": "expression"`, and asserts that OpenSearch rejects it (HTTP 400) because the field is not numeric/date/geopoint. This locks in the unsupported-behavior contract as a regression guard.
 
 ### Manual Testing
 
-[What you tested manually and results]
+- Ran the single integration test in isolation:
+  ```
+  ./gradlew integTest --tests "org.opensearch.knn.integ.ExpressionScriptScoreIT.testExpressionScriptingUnsupportedOnKnnVector"
+  ```
+  Result: `BUILD SUCCESSFUL`, JUnit `tests="1" skipped="0" failures="0" errors="0"`.
 
 ---
 
@@ -194,19 +197,28 @@ Using UMPIRE framework (adapted):
 * Environment validated: Java 21, `compileTestJava`, native dependencies, `buildJniLib`, and the existing Painless integration test all passed.
 * Gap reproduced: the Expression test returns HTTP 400 with `Field [test_field] must be numeric, date, or geopoint`.
 * Root cause located: failure is at Expression field binding / query creation, because `knn_vector` is not numeric/date/geopoint.
-* No final fix implemented yet.
+* Phase III implementation added a focused unsupported-behavior guard test rather than full Expression support, because the investigation showed the limitation occurs at OpenSearch core Expression field binding.
 * No PR created yet.
-* Next: confirm the producing core source line, then align with maintainers on the issue before any Phase III work.
+* Phase II's reproduction and root-cause analysis led directly into the Phase III approach: an integration test that guards the documented unsupported behavior (see Phase III Status below).
 
-### Week [Y] Progress
+### Phase III Status
 
-[Continue documenting as you work]
+* **Implementation commit complete and pushed:** `747aadc7 Add expression scripting unsupported integration test` on branch `fix-expression-scripting-knn-vector`.
+* **Scope delivered:** an integration test that guards the unsupported Expression-scripting behavior for `knn_vector` (an unsupported-behavior regression guard), not full Expression support.
+* **Test passing:** `BUILD SUCCESSFUL`, JUnit `tests="1" skipped="0" failures="0" errors="0"`.
+* **Technical finding confirmed:** Expression scripting rejects `knn_vector` at OpenSearch core field binding because Expression expects numeric, date, or geopoint doc values. `knn_vector` exposes BYTES-backed fielddata, and Painless works through a Painless-specific extension/allowlist path that Expression does not have.
+* **Challenge:** distinguishing a true feature gap from a structural constraint. The reproduction and the BYTES-backed-fielddata observation showed that Expression has no allowlist/extension mechanism comparable to Painless's, so a one-numeric-value-per-document binding cannot represent a vector field. Forcing a feature path was therefore not a safe contribution.
+* **Decision:** rather than implement speculative Expression support, I contributed an integration test that documents and guards the current unsupported behavior. This is small, non-duplicative, and gives maintainers a concrete, verifiable artifact tied directly to #459.
+* **Next step:** open the upstream PR against `opensearch-project/k-NN` referencing issue #459, summarizing the unsupported-behavior finding and the guard test, and align with maintainers on whether a clearer unsupported-field error message is also desired. No PR has been opened yet.
 
 ### Code Changes
 
-- **Files modified:** [List]
-- **Key commits:** [Links to important commits]
-- **Approach decisions:** [Why you chose certain approaches]
+- **Files added:** `src/test/java/org/opensearch/knn/integ/ExpressionScriptScoreIT.java` (in the `opensearch-project/k-NN` repo, on my fork branch).
+- **Test added:** `testExpressionScriptingUnsupportedOnKnnVector`.
+- **Key commit:** `747aadc7 Add expression scripting unsupported integration test` on branch `fix-expression-scripting-knn-vector` (PR not yet opened).
+- **Test command:** `./gradlew integTest --tests "org.opensearch.knn.integ.ExpressionScriptScoreIT.testExpressionScriptingUnsupportedOnKnnVector"`.
+- **Test result:** `BUILD SUCCESSFUL`; JUnit `tests="1" skipped="0" failures="0" errors="0"`.
+- **Approach decision:** ship an honest unsupported-behavior guard test backed by the Phase II reproduction, instead of a speculative feature implementation that Expression's binding model does not support.
 
 ---
 
