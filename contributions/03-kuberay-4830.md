@@ -4,11 +4,11 @@
 **Student:** Adiba Akter
 **Project:** KubeRay (`ray-project/kuberay`)
 **Repository:** https://github.com/ray-project/kuberay
-**Issue:** [#4830 — \[Feature\] Collect rotated logs](https://github.com/ray-project/kuberay/issues/4830)
+**Issue:** [#4830: \[Feature\] Collect rotated logs](https://github.com/ray-project/kuberay/issues/4830)
 **Fork:** https://github.com/AdibaAdi/kuberay
 **Contribution repo (public):** https://github.com/AdibaAdi/su26-ai301-contribution
 **Branch (local, not yet pushed):** `feat/4830-collect-rotated-logs`
-**Status:** Phase I complete — design shared publicly on the issue with the author and project members tagged; Phase II investigation beginning. No implementation started, no upstream PR opened.
+**Status:** Phase I complete. Design shared publicly on the issue with the author and project members tagged; Phase II investigation beginning. No implementation started, no upstream PR opened.
 
 ---
 
@@ -36,10 +36,10 @@ documentation, and I have labelled them as preliminary throughout.
 
 I picked #4830 because it is the kind of problem I keep running into from the other
 side. My background is Python, backend services, and testing, and most of my recent
-interest has been in AI infrastructure — the boring, unglamorous layer that decides
-whether an ML job is debuggable at 3 a.m. Log collection for a distributed Ray cluster is
-exactly that layer. It is not a flashy feature, but if it silently drops data, every
-downstream investigation gets harder.
+interest has been in AI infrastructure, the unglamorous layer that decides whether an ML
+job is debuggable at 3 a.m. Log collection for a distributed Ray cluster is exactly that
+layer. It is not a flashy feature, but if it silently drops data, every downstream
+investigation gets harder.
 
 It is also a deliberate stretch. My first two contributions were Java (OpenSearch k-NN)
 and Python/Rust (Lance). This one is Go and Kubernetes, which I have read but not shipped
@@ -53,7 +53,7 @@ new to me at the same time.
 Finally, the scope discipline appealed to me. The reporter explicitly said the task is not
 straightforward and asked for a design first. That is a good forcing function against my
 usual instinct to start editing code, and it matches the lesson I wrote down at the end of
-Contribution 1 — open a scoping conversation with maintainers *before* planning an
+Contribution 1: open a scoping conversation with maintainers *before* planning an
 implementation, not after.
 
 ---
@@ -76,13 +76,13 @@ uploading duplicates and without re-uploading everything after a restart.
 ## Why This Matters for Long-Running Distributed AI Workloads
 
 The reporter's stated motivation is that rotation exists because the local filesystem can
-run out of disk, but the History Server writes to object storage, which has no such limit
-— so there is no good reason to lose the rotated content. In practice this bites hardest
-on exactly the workloads KubeRay exists to serve: multi-day training runs, long-lived Ray
+run out of disk, but the History Server writes to object storage, which has no such limit,
+so there is no good reason to lose the rotated content. In practice this bites hardest on
+exactly the workloads KubeRay exists to serve: multi-day training runs, long-lived Ray
 Serve deployments, and batch inference clusters that stay up for weeks. Those are the
 clusters that generate enough log volume to rotate in the first place, and they are also
-the ones where a postmortem needs the *early* logs — the ones that rotated away first —
-to explain a failure that surfaced much later. A collector that only reliably captures the
+the ones where a postmortem needs the *early* logs, the ones that rotated away first, to
+explain a failure that surfaced much later. A collector that only reliably captures the
 final window of logs is most reliable precisely when it is least needed.
 
 ---
@@ -108,7 +108,7 @@ stale, the commit windows below are relative to that fetch, not to today.
 
 | Signal | Value |
 |---|---|
-| `upstream/master` HEAD | `6fe0223c` — "Rename TargetClusterChanged for clarity (#5022)" |
+| `upstream/master` HEAD | `6fe0223c` ("Rename TargetClusterChanged for clarity (#5022)") |
 | Most recent commit date | 2026-07-22 |
 | Commits on `master` in the prior 30 days | 31 |
 | Distinct authors in the prior 90 days | 35 |
@@ -151,23 +151,23 @@ pushed, because there is nothing on it yet.
 
 All four links below are public comments on issue #4830 and can be opened directly.
 
-1. **Earlier project-member signal that the direction is wanted** —
+1. **Earlier project-member signal that the direction is wanted:**
    https://github.com/ray-project/kuberay/issues/4830#issuecomment-4523841501
    A project member (`JiangJiaWei1103`) engaged with the request before I was involved.
    This predates my involvement and is what convinced me the feature was worth picking up
    rather than a request that had already been declined.
 
-2. **My introduction on the issue** —
+2. **My introduction on the issue:**
    https://github.com/ray-project/kuberay/issues/4830#issuecomment-5052716814
    I said I wanted to work on the issue and described how I planned to start.
 
-3. **The issue author asking me to share a design first** —
+3. **The issue author asking me to share a design first:**
    https://github.com/ray-project/kuberay/issues/4830#issuecomment-5052727165
    `dentiny`, who filed the issue, made the point that this is not a straightforward task
    and that a design should be discussed before implementation. I took that seriously
    rather than treating it as optional.
 
-4. **My detailed design comment** —
+4. **My detailed design comment:**
    https://github.com/ray-project/kuberay/issues/4830#issuecomment-5052938252
    This is the design summarised in the "Proposed Direction" section below. I posted it
    publicly on the issue with the author and project members tagged, so the discussion
@@ -177,8 +177,8 @@ All four links below are public comments on issue #4830 and can be opened direct
 explicit about what that does and does not mean:
 
 - The issue is **not** assigned to me, and I have not asked for it to be.
-- Nobody has approved my proposed design. Pending feedback is exactly that — pending —
-  and I am not treating the absence of a reply as agreement.
+- Nobody has approved my proposed design. Pending feedback is exactly that: pending. I am
+  not treating the absence of a reply as agreement.
 - The only thing endorsed so far is the general idea of collecting rotated logs, in the
   earlier project-member comment (link 1) and in the issue author's own framing.
 - Phase II reproduction and validation continue in the meantime, because reproducing the
@@ -198,7 +198,7 @@ not run the collector, so these are code-reading findings, not observed runtime 
 `RayLogHandler.Run` (`historyserver/pkg/collector/logcollector/runtime/logcollector/collector.go:49`)
 starts a small set of goroutines and then blocks on a stop channel:
 
-- `WatchPrevLogsLoops()` — runs on **both** head and worker nodes. It scans
+- `WatchPrevLogsLoops()` runs on **both** head and worker nodes. It scans
   `/tmp/ray/prev-logs` on startup and then uses three `fsnotify` watchers to pick up new
   session/node directories, so leftover logs from a previous run get uploaded.
 - Head-only goroutines: `WatchSessionLatestLoops()`, `FetchAndStoreClusterMetadata()`,
@@ -206,7 +206,7 @@ starts a small set of goroutines and then blocks on a stop channel:
 - On stop, `Run` calls `processSessionLatestLogs()` (both roles), then
   `processAdditionalEndpoints()` (head only), then closes `ShutdownChan`.
 
-### Preliminary finding 1 — the live-session upload really is shutdown-shaped
+### Preliminary finding 1: the live-session upload really is shutdown-shaped
 
 `processSessionLatestLogs` (`collector.go:91`) resolves the `session_latest` symlink,
 reads the node ID from `/tmp/ray/raylet_node_id`, and `filepath.WalkDir`s the session
@@ -217,7 +217,7 @@ exactly one place: the shutdown path. There is no ticker, no watcher, and no oth
 that uploads live-session log content while the cluster is running. This matches the
 reporter's description of the mechanism.
 
-### Preliminary finding 2 — there is already a dedupe pattern worth reusing
+### Preliminary finding 2: there is already a dedupe pattern worth reusing
 
 The `prev-logs` path solves the duplicate-upload problem in a way that looks directly
 reusable. `processPrevLogFile` (`collector.go:615`) uploads a file and then `os.Rename`s
@@ -229,7 +229,7 @@ collector restart. Two details matter for #4830: the marker path is derived from
 `.2`; and `processPrevLogsDir` deletes the whole node directory when it finishes
 (`collector.go:607`), which is fine for a dead session but would be wrong for a live one.
 
-### Preliminary finding 3 — there is an existing periodic-loop pattern to copy
+### Preliminary finding 3: there is an existing periodic-loop pattern to copy
 
 `PollAdditionalEndpointsPeriodically` (`poll.go:26`) is the shape a rotated-log scanner
 should follow: do one pass immediately, then `time.NewTicker(interval)` in a
@@ -237,10 +237,10 @@ should follow: do one pass immediately, then `time.NewTicker(interval)` in a
 periodic scanner, following this structure keeps it consistent with code that already
 exists rather than inventing a new lifecycle.
 
-### Preliminary finding 4 — the periodic-push plumbing exists but is unused
+### Preliminary finding 4: the periodic-push plumbing exists but is unused
 
 `RayLogHandler` declares `PushInterval`, `LogBatching`, `LogFiles`, `logFilePaths`, and
-`LogDir` (`collector.go:23–47`). `PushInterval` is fed by the `--push-interval` flag in
+`LogDir` (`collector.go:23-47`). `PushInterval` is fed by the `--push-interval` flag in
 `historyserver/cmd/collector/main.go` (default one minute) and plumbed through
 `runtime.NewCollector` (`runtime.go:18`), but grepping the non-test sources shows it is
 only ever *assigned*, never read by the log-collector loops. `r.LogDir` appears in `Run`
@@ -249,7 +249,7 @@ confirm it upstream, but if it holds, there is already a configured interval
 looking for a consumer, and I should ask whether reusing `--push-interval` is preferred
 over adding a new flag.
 
-### Preliminary finding 5 — what Ray actually does on rotation
+### Preliminary finding 5: what Ray actually does on rotation
 
 From the Ray logging documentation the issue author wrote and linked in the issue:
 rotation is on by default at 512 MB `maxBytes` with a `backupCount` of five, backups are
@@ -269,7 +269,7 @@ A periodic scanner that:
 - records successful uploads on the shared volume, using the existing
   `persist-complete-logs` marker idea, so restarts do not re-upload;
 - identifies a segment by something stable across renames rather than by filename alone,
-  so `.1` → `.2` does not produce a second copy of the same bytes;
+  so a rename from `.1` to `.2` does not produce a second copy of the same bytes;
 - leaves failed uploads unmarked so they are retried on the next pass;
 - leaves the existing shutdown and `prev-logs` paths completely unchanged.
 
@@ -289,40 +289,40 @@ the "likely role" column is my expectation, not a completed change.
 |---|---:|---|
 | `historyserver/pkg/collector/logcollector/runtime/logcollector/collector.go` | 779 | Primary. Holds `RayLogHandler`, `Run`, `processSessionLatestLogs`, `processPrevLogFile`, and `isFileAlreadyPersisted`. A new scanner goroutine would be started from `Run` and would reuse or generalise the persisted-marker helpers. |
 | `historyserver/pkg/collector/logcollector/runtime/logcollector/poll.go` | 142 | Reference pattern for a ticker loop driven by `ShutdownChan`. Possibly the file a new scanner lives beside, to keep `collector.go` from growing further. |
-| `historyserver/pkg/collector/logcollector/runtime/logcollector/collector_test.go` | 241 | Existing test harness — `MockStorageWriter` (an in-memory `storage.StorageWriter`) and `setupRayTestEnvironment`, which builds `prev-logs` / `persist-complete-logs` trees under a temp root. New rotation tests should extend this rather than build a parallel harness. |
+| `historyserver/pkg/collector/logcollector/runtime/logcollector/collector_test.go` | 241 | Existing test harness: `MockStorageWriter` (an in-memory `storage.StorageWriter`) and `setupRayTestEnvironment`, which builds `prev-logs` / `persist-complete-logs` trees under a temp root. New rotation tests should extend this rather than build a parallel harness. |
 | `historyserver/pkg/collector/logcollector/runtime/runtime.go` | 60 | `NewCollector` wires config into `RayLogHandler`; any new interval or toggle is threaded through here. |
-| `historyserver/pkg/collector/types/types.go` | — | `RayCollectorConfig`, where a new configuration field would be declared. |
+| `historyserver/pkg/collector/types/types.go` | n/a | `RayCollectorConfig`, where a new configuration field would be declared. |
 | `historyserver/cmd/collector/main.go` | 192 | Collector entrypoint and flag parsing; already defines `--push-interval` and reads `RAY_COLLECTOR_*` environment variables, so it is the natural place for scan configuration. |
-| `historyserver/pkg/utils/constant.go` | 38 | `GetTmpRayRoot`, `GetRayPrevLogsPath`, `GetRayPersistCompletePath`, `GetRaySessionLatestPath`, `GetRayNodeIDPath` — every path the collector touches resolves through here, including the `RAY_TMP_ROOT` override the tests rely on. |
+| `historyserver/pkg/utils/constant.go` | 38 | `GetTmpRayRoot`, `GetRayPrevLogsPath`, `GetRayPersistCompletePath`, `GetRaySessionLatestPath`, `GetRayNodeIDPath`. Every path the collector touches resolves through here, including the `RAY_TMP_ROOT` override the tests rely on. |
 | `historyserver/pkg/utils/utils.go` | 174 | `GetLogDirByNameID` builds the object key layout `{root}/{cluster}_{ns}/{session}/logs/{nodeID}/...`; rotated segments must land in the same layout so the History Server UI can read them. |
 | `historyserver/pkg/storage/interface.go` | 26 | `StorageWriter` is only `CreateDirectory` + `WriteFile`. Worth confirming upstream whether whole-file rewrites are acceptable for large rotated segments or whether an append/streaming concern needs raising. |
-| `historyserver/DEVELOPMENT.md` | — | The kind + MinIO + History Server walkthrough I will follow in Phase II to actually observe rotation. May need a note if new configuration is added. |
-| `historyserver/config/`, `historyserver/test/e2e/` | — | Collector sidecar configuration and end-to-end tests; likely touched only if a new flag or environment variable is introduced. |
+| `historyserver/DEVELOPMENT.md` | n/a | The kind + MinIO + History Server walkthrough I will follow in Phase II to actually observe rotation. May need a note if new configuration is added. |
+| `historyserver/config/`, `historyserver/test/e2e/` | n/a | Collector sidecar configuration and end-to-end tests; likely touched only if a new flag or environment variable is introduced. |
 
 ---
 
 ## Related Issue / PR Context
 
-- **[PR #4983](https://github.com/ray-project/kuberay/pull/4983)** — modifies node ID
+- **[PR #4983](https://github.com/ray-project/kuberay/pull/4983)** modifies node ID
   handling and leftover-log handling in the same collector area. This overlaps with the
   code I would be changing: node ID resolution feeds the storage key built by
   `GetLogDirByNameID`, and "leftover logs" is the `prev-logs` path whose dedupe mechanism
   I want to reuse. Whatever I implement has to be rebased on top of it, and if it changes
   how the persisted-marker directory works, my design changes with it. I am treating this
   PR as a dependency to track, not a blocker.
-- **[Issue #4825](https://github.com/ray-project/kuberay/issues/4825)** — "Question:
-  what's the usage pattern for history server", referenced from #4830 by the same
-  reporter. Useful background on how the History Server is expected to be used, which
-  matters for deciding whether a lossy-but-cheap scanner is acceptable.
+- **[Issue #4825](https://github.com/ray-project/kuberay/issues/4825)**, "Question:
+  what's the usage pattern for history server", is referenced from #4830 by the same
+  reporter. It is useful background on how the History Server is expected to be used,
+  which matters for deciding whether a lossy-but-cheap scanner is acceptable.
 - **[Ray log rotation documentation](https://docs.ray.io/en/latest/ray-observability/user-guides/configure-logging.html#log-rotation)**
-  — the authoritative description of the rotation behaviour, written by the issue reporter
-  and linked from the issue body.
+  is the authoritative description of the rotation behaviour. It was written by the issue
+  reporter and linked from the issue body.
 
 ---
 
 ## Preliminary Definition of Done / Acceptance Criteria
 
-These are the outcomes I proposed. They are **not** agreed criteria — every one of them is
+These are the outcomes I proposed. They are **not** agreed criteria. Every one of them is
 still subject to confirmation by the issue author and project members, and criterion 1 in
 particular is a best-effort statement rather than a guarantee. Phase II is where I expect
 to validate or correct several of them empirically.
@@ -344,9 +344,9 @@ to validate or correct several of them empirically.
    upload failure and retry, and a regression test that the shutdown path still uploads
    what it uploads today.
 
-Criteria 2–6 are the ones I would defend hardest, because they are about not breaking or
-double-writing anything. Criterion 1 is the one most likely to need rewording once there
-is a shared view of how much loss is acceptable.
+Criteria 2 through 6 are the ones I would defend hardest, because they are about not
+breaking or double-writing anything. Criterion 1 is the one most likely to need rewording
+once there is a shared view of how much loss is acceptable.
 
 ---
 
@@ -361,8 +361,8 @@ is a shared view of how much loss is acceptable.
 - *Identifying a segment across renames.* Filename is not a stable identity. Inode number,
   size, and content hash are all candidates, and each has a cost or a failure mode
   (hashing 512 MB per scan is expensive; inode numbers are reused after deletion). I do
-  not have a settled answer yet — this is the single most important thing to resolve in
-  Phase II.
+  not have a settled answer yet, and this is the single most important thing to resolve
+  in Phase II.
 - *Collision with PR #4983.* Concurrent changes to the same collector area mean rebase
   work and possibly a design change.
 - *Whole-file reads.* The current upload path does `os.ReadFile` into memory. Doing that
@@ -408,8 +408,8 @@ is a shared view of how much loss is acceptable.
 - [x] Preliminary acceptance criteria drafted
 - [x] Risks and open questions written down
 - [x] This Phase I document written and the root README updated
-- [ ] Feedback on the design — pending; will be incorporated if received
-- [ ] Issue assignment — not requested, not granted
+- [ ] Feedback on the design: pending; will be incorporated if received
+- [ ] Issue assignment: not requested, not granted
 
 ---
 
@@ -428,8 +428,8 @@ feedback arriving first: reproducing the loss and characterising the rotation be
 useful evidence whichever mechanism is eventually chosen, and it is what will let me argue
 for a mechanism with data instead of assertion.
 
-1. Stand up the local environment from `historyserver/DEVELOPMENT.md` — kind cluster,
-   KubeRay operator, MinIO, History Server — and confirm the normal log path works end to
+1. Stand up the local environment from `historyserver/DEVELOPMENT.md` (kind cluster,
+   KubeRay operator, MinIO, History Server) and confirm the normal log path works end to
    end before touching rotation.
 2. Force rotation with small values (`RAY_ROTATION_MAX_BYTES` and
    `RAY_ROTATION_BACKUP_COUNT` set low) so segments rotate in seconds instead of at
@@ -437,7 +437,7 @@ for a mechanism with data instead of assertion.
 3. Demonstrate the actual loss: show that a segment created and deleted while the cluster
    is running never appears in MinIO, with concrete evidence rather than inference from
    code reading.
-4. Confirm or correct preliminary findings 1 and 4 — specifically, that
+4. Confirm or correct preliminary findings 1 and 4: specifically, that
    `processSessionLatestLogs` has no non-shutdown caller, and that `PushInterval` is
    genuinely unused by the log-collector loops.
 5. Investigate segment identity across renames (inode, size, hash) and pick a candidate
@@ -449,7 +449,7 @@ for a mechanism with data instead of assertion.
 ### Phase III (after Phase II validation)
 
 Implementation begins once Phase II has validated the behaviour and resolved the key
-design risks — specifically, that the loss reproduces as described, and that segment
+design risks: specifically, that the loss reproduces as described, and that segment
 identity across renames has a workable answer. Waiting for that is a sequencing decision
 based on evidence, not a hold on anyone else's reply.
 
@@ -457,21 +457,21 @@ Maintainer feedback remains pending and will be incorporated into the design if 
 arrives; if it changes the mechanism, I will update this document and say so plainly
 rather than quietly reframing what I already wrote. If nothing arrives by the time Phase
 II is complete, I will follow up on the issue with the reproduction results attached,
-which is a better prompt for a reply than a second ping — and I will not treat a lack of
+which is a better prompt for a reply than a second ping. I will not treat a lack of
 response as agreement with my design.
 
 ---
 
 ## Resources Used
 
-- KubeRay issue #4830 — https://github.com/ray-project/kuberay/issues/4830
-- KubeRay issue #4825 — https://github.com/ray-project/kuberay/issues/4825
-- KubeRay PR #4983 — https://github.com/ray-project/kuberay/pull/4983
-- KubeRay repository — https://github.com/ray-project/kuberay
-- KubeRay `CONTRIBUTING.md` — https://github.com/ray-project/kuberay/blob/master/CONTRIBUTING.md
-- KubeRay History Server development guide — https://github.com/ray-project/kuberay/blob/master/historyserver/DEVELOPMENT.md
-- Ray log rotation and logging configuration — https://docs.ray.io/en/latest/ray-observability/user-guides/configure-logging.html#log-rotation
-- Ray log persistence on Kubernetes — https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/persist-kuberay-custom-resource-logs.html
-- Go `fsnotify` — https://pkg.go.dev/github.com/fsnotify/fsnotify
-- Go `path/filepath` (`WalkDir`, `EvalSymlinks`, `Rel`) — https://pkg.go.dev/path/filepath
-- Kubernetes sidecar containers and shared volumes — https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+- KubeRay issue #4830: https://github.com/ray-project/kuberay/issues/4830
+- KubeRay issue #4825: https://github.com/ray-project/kuberay/issues/4825
+- KubeRay PR #4983: https://github.com/ray-project/kuberay/pull/4983
+- KubeRay repository: https://github.com/ray-project/kuberay
+- KubeRay `CONTRIBUTING.md`: https://github.com/ray-project/kuberay/blob/master/CONTRIBUTING.md
+- KubeRay History Server development guide: https://github.com/ray-project/kuberay/blob/master/historyserver/DEVELOPMENT.md
+- Ray log rotation and logging configuration: https://docs.ray.io/en/latest/ray-observability/user-guides/configure-logging.html#log-rotation
+- Ray log persistence on Kubernetes: https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/persist-kuberay-custom-resource-logs.html
+- Go `fsnotify`: https://pkg.go.dev/github.com/fsnotify/fsnotify
+- Go `path/filepath` (`WalkDir`, `EvalSymlinks`, `Rel`): https://pkg.go.dev/path/filepath
+- Kubernetes sidecar containers and shared volumes: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
