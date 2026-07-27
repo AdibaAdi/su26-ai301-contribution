@@ -87,18 +87,16 @@ final window of logs is most reliable precisely when it is least needed.
 
 ---
 
-## Issue Selection Checklist
+## Issue Selection Rationale
 
-Evaluated honestly, including the checks that are not a clean pass.
-
-| # | CodePath check | Verdict | Evidence / caveat |
-|---|---|---|---|
-| 1 | I understand the problem | Pass | The issue body states the mechanism ("log collector only reads and uploads all the files under ray logging directory honestly at process termination, which means rotated log content is not recoverable") and links the Ray rotation docs. My restatement is the Problem Summary above, and the Preliminary Codebase Orientation section traces the mechanism to specific functions. |
-| 2 | Scope fits 3–4 weeks | Pass, with managed risk | This is labelled P2/enhancement, not `good first issue`, and the issue author said outright that it is not straightforward, so I am not pretending it is small. What makes it bounded is the shape of the change: it is **additive**, a new periodic path running alongside the existing shutdown and `prev-logs` paths rather than a rewrite of either, and the hard sub-problem (not re-uploading what was already uploaded) already has a working precedent in the repository that I expect to reuse rather than invent. The risk I am actively managing is the segment-identity question in the Risks section; if that turns out to need a mechanism nobody has built, I will renegotiate scope on the issue rather than quietly overrun. |
-| 3 | Matches my skills or skills I can learn quickly | Pass | Match: backend file-lifecycle reasoning, idempotency, restart safety, and test design, all of which carry over from Python backend work. Learn quickly: Go (goroutines, tickers, `filepath.WalkDir`, table-driven tests), Kubernetes sidecars, and shared volume semantics. The correctness reasoning and the language are not both new at once, which is what makes the stretch realistic. |
-| 4 | Issue is active and claimable | Pass, with a caveat | [#4830](https://github.com/ray-project/kuberay/issues/4830) is open, filed by `dentiny` (the issue author) on 2026-05-12, labelled `P2`/`enhancement`. The GitHub sidebar shows **Assignees: No one assigned** and **Development: No branches or pull requests**. The repository itself is active: 31 commits on `upstream/master` in the 30 days before my last fetch, 35 distinct authors in 90 days, 19 commits touching `historyserver/`. The caveat is [PR #4983](https://github.com/ray-project/kuberay/pull/4983), which touches adjacent code without claiming this issue. I have not claimed assignment and have not asked to be assigned. |
-| 5 | Helpful context exists | Pass | The issue author wrote the Ray log-rotation documentation and linked it from the issue, so the upstream behaviour is documented rather than guessed. There is prior discussion in [#4825](https://github.com/ray-project/kuberay/issues/4825) on History Server usage patterns, an earlier comment endorsing the direction, and the collector code carries substantial explanatory comments (for example the worked example above `isFileAlreadyPersisted`). |
-| 6 | Clear setup documentation exists | Pass | [`CONTRIBUTING.md`](https://github.com/ray-project/kuberay/blob/master/CONTRIBUTING.md) documents PR conventions (`subject: message`, squash-and-commit, and that tests/docs are the feature owner's responsibility) and points to per-subproject `DEVELOPMENT.md`. `historyserver/DEVELOPMENT.md` gives a full kind + MinIO + History Server walkthrough, including how to generate a dead session and validate both the dead and live paths. |
+| Consideration | Assessment |
+|---|---|
+| Problem understanding | The issue clearly describes a gap in the current History Server collector: rotated log segments may be deleted before they are uploaded to object storage. My problem summary and codebase investigation trace that behavior to the collector's shutdown and previous-session recovery paths. |
+| Scope | The issue is non-trivial, but the expected change appears bounded. The proposed work adds a new collection path alongside the existing shutdown and `prev-logs` behavior rather than redesigning the entire collector. The main technical risk is identifying rotated segments reliably across filename changes. |
+| Skill alignment | The work builds on my experience with backend systems, file lifecycle behavior, idempotency, restart safety and test design. It also gives me a practical opportunity to strengthen my Go and Kubernetes experience. |
+| Repository activity and issue availability | KubeRay and the `historyserver` area are actively maintained. Issue #4830 is open and unassigned, with no pull request currently linked as its implementation. PR #4983 touches related collector code, so I will track it closely to avoid conflicting work. |
+| Available technical context | The issue links directly to Ray's log-rotation documentation, and the repository contains existing shutdown, recovery and persistence logic that provides a concrete starting point. Related issue #4825 and PR #4983 also provide useful architectural context. |
+| Development and contribution workflow | KubeRay provides clear contribution guidelines and a dedicated `historyserver/DEVELOPMENT.md` guide covering the local Kind, MinIO and History Server setup. This gives me a documented path for reproducing the behavior and validating a solution. |
 
 ---
 
@@ -393,8 +391,8 @@ is a shared view of how much loss is acceptable.
 ## Phase I Completion Checklist
 
 - [x] Issue identified and read in full, including the linked Ray rotation documentation
-- [x] All six CodePath issue-selection checks evaluated honestly, including the scope check
-      where the risk is real and managed
+- [x] Issue selection rationale documented across problem understanding, scope, skill
+      alignment, repository activity, available context and contribution workflow
 - [x] Repository activity and claimability verified against the local clone, with commands
       recorded
 - [x] Repository forked to `AdibaAdi/kuberay`
