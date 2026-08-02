@@ -8,7 +8,7 @@
 **Fork:** https://github.com/AdibaAdi/kuberay
 **Contribution repo (public):** https://github.com/AdibaAdi/su26-ai301-contribution
 **Working branch:** [`feat/4830-collect-rotated-logs`](https://github.com/AdibaAdi/kuberay/tree/feat/4830-collect-rotated-logs)
-**Status:** Phase I complete. Phase II investigation, reproduction and solution planning complete and recorded below. Work in progress on the branch is not documented here yet, and no upstream pull request exists.
+**Status:** Phases I and II complete. Phase III implementation is under way: five tranches are committed to the working branch and tested at the package level, while the production lifecycle wiring is still under review in my working tree. No end-to-end cluster verification, no upstream pull request, and the issue is not solved.
 
 ---
 
@@ -831,6 +831,313 @@ prefer that one of the two paths yield to the other.
 
 ---
 
+## Phase III: Implementation
+
+### Implementation Progress
+
+Implementation lives on
+[`feat/4830-collect-rotated-logs`](https://github.com/AdibaAdi/kuberay/tree/feat/4830-collect-rotated-logs)
+in my fork and is pushed to `origin`. Five commits sit on top of upstream `d36899dd`, all
+authored on 2026-07-31, and they were deliberately shaped as tranches that each stand on
+their own: every one compiles, is covered by its own tests, and adds a layer the next one
+builds on. Reviewing them in order is meant to be easier than reviewing the whole
+subsystem at once, and it also meant that when a later tranche found a flaw in an earlier
+assumption, the correction landed as a visible change rather than being quietly folded
+into an unreviewable diff.
+
+**`c04a4e0b` — [History Server] Add rotated log naming and staging paths** introduces
+`rotated_names.go` (352 lines) with `rotated_names_test.go` (486 lines) and adds eight
+lines to `historyserver/pkg/utils/constant.go`. It answers the two questions everything
+else depends on: what counts as a rotation backup, and where a captured one lives. Ray's
+convention is encoded once, in `rotationBackupRe`, and read through `parseBackupName`,
+with `evaluateCandidate` deciding eligibility from the entry's mode and whether a known
+active base file exists in the same directory — the check that keeps unrelated files
+ending in `.<digits>` out of the capture path. Identity comes from `captureIDGenerator`,
+which mints a zero-padded nanosecond timestamp plus 64 bits of `crypto/rand` entropy, and
+a failure of the entropy source aborts the capture rather than falling back to something
+predictable. `captureFileName` and `parseCaptureFileName` attach and recover that ID
+around the `.rotated.` separator, so a stored object still carries the operator-readable
+rotation name. `clusterIdentity.objectKey` places the result under `clusterlogs.LogsDir`,
+and `stagedEntry`, `newStagedEntry`, `parseStagedPath`, `validatePathSegment`,
+`validateRelDir` and `relDirFor` validate every component that ends up in a filesystem or
+object path, because each of those fields is joined into a path and an unvalidated one is
+a traversal. The staging layout itself is the design's quiet centrepiece:
+`<staging root>/<session>/<node>/<state>/<relative dir>/<name>.rotated.<capture ID>`,
+where `state` is the literal directory name `pending` or `uploaded`. Progress is durable
+because it is a directory level, not a field in memory, and
+`utils.GetRayRotatedStagingPath` puts that root at `rotated-staging` under `RAY_TMP_ROOT`,
+beside `prev-logs` rather than inside it, since the `prev-logs` walker uploads and then
+deletes whole node directories.
+
+**`0ac2a1a8` — [History Server] Add rotated log capture state** adds `rotated_state.go`
+(145 lines) and `rotated_state_test.go` (226 lines). This is the in-memory half of
+identity: `inodeKey` pairs device and inode, `capture` binds that key to its staged entry,
+and `capture.releasable` encodes the two-part release condition — uploaded, and a link
+count of one. `captureIndex` holds every pinned segment for one collector and is
+deliberately lock-free, because a single owner goroutine is its only caller; `add` is
+idempotent per inode, which is how a `.1` event and a later `.2` event for the same
+physical file collapse into one capture rather than two object keys. `restore` is the
+restart path and is stricter than `add`: an inode found under two staging records is a
+corrupt tree and is refused, rather than letting the filesystem walk order decide which
+record wins. `observeBase` and `baseObserved` remember active log file names per
+directory, which is what lets a backup still be recognised during the instant a rotation
+cascade leaves the active name unlinked. `validTransition` allows exactly one durable
+state change, `pending` to `uploaded`, and nothing moves back.
+
+**`0507b2be` — [History Server] Add rotated log hard-link capture** adds `rotated_fs.go`
+(178 lines), `rotated_fs_test.go` (765 lines), and the platform split
+`rotated_stat_unix.go` (26 lines) and `rotated_stat_other.go` (15 lines). `captureLink`
+is the operation the whole design rests on: a hard link into staging, which costs no copy
+and no additional blocks, and after which the segment survives both the rename and the
+unlink. `promoteCapture` performs the `pending` to `uploaded` move by doing every fallible
+step — the directory creation — before the rename, so that once the atomic rename succeeds
+all that remains is an assignment on the owner goroutine and disk and index cannot end up
+disagreeing. `releaseCapture` re-reads the link count itself immediately before unlinking
+rather than trusting a count passed in, because a caller-supplied count is a claim about
+the past, and it removes the index entry only after the unlink, since the kernel may hand
+that inode number to an unrelated file the moment the last link disappears. The error
+classifiers `isUnsupportedLinkError` (`EXDEV`, `EPERM`, `EACCES`), `isVanished` and
+`isAlreadyStaged` separate a deployment that cannot support capture from a race lost to
+rotation from an outright bug.
+
+**`fe14aa1f` — [History Server] Add rotated log discovery loop** adds
+`rotated_collector.go` (712 lines) and `rotated_collector_test.go` (1579 lines). This is
+where discovery becomes continuous. `rotatedCollector` runs one goroutine that owns all
+state; `fsnotify` watches are installed recursively over the session's `logs/` tree by
+`installWatchesRecursive`, and `defaultReconcileInterval` (30 seconds) drives a backstop
+sweep, because a watch added to a directory cannot see what was already in it and
+`fsnotify` can drop events under load — an `ErrEventOverflow` triggers an immediate
+reconcile rather than waiting for the next tick. Startup order is load-bearing and
+documented as such: watches first, so no segment can appear and vanish unobserved while
+reconstruction runs; then `reconstructStaging`, so a restart adopts what the previous run
+pinned instead of minting a second capture ID for it; then the full scan. `inspectFile`
+records active base names and routes eligible backups into `capture`, which reads the
+inode back from the link it created rather than from the source path — between validating
+a candidate and linking it, `raylet.out.1` can already name a different file, and pinning
+one inode while recording another would break deduplication, restart recovery and release
+at once. `reconstructStaging`, `collectStagedRecords` and `removeSurplusLink` make restart
+deterministic: records are sorted into a total order (pending before uploaded, then
+capture ID, then path) so nothing depends on walk order, a surplus link is removed only
+after confirming it still holds the inode it was recorded with, and an unreadable staging
+subtree stops startup rather than leaving links pinning inodes that nothing owns.
+
+**`f86bd856` — [History Server] Add rotated log upload lifecycle** adds
+`rotated_uploader.go` (1090 lines) and `rotated_uploader_test.go` (2097 lines), and
+revises `rotated_collector.go` and `rotated_names.go` in the process. Uploading is pushed
+onto a worker and never performed on the owner goroutine, because a `WriteFile` sitting
+between a rotation and its capture would lose exactly the segments the collector exists to
+keep. `uploadWorker.execute` validates on the open descriptor rather than the path — an
+`fstat` after `open` answers "what did I actually open?" — and then hands the `*os.File`
+straight to `storage.StorageWriter.WriteFile`, so a large segment streams rather than
+being read into the sidecar's memory. Results come back as immutable values and are
+matched against a comparable `uploadIdentity` before anything is applied, which is how a
+result that outlived its capture is discarded instead of mutating whatever now occupies
+the same inode. Failures follow `defaultUploadBackoff`, a fixed 1s-to-5m sequence without
+jitter, since one collector uploads one capture at a time and a fixed sequence is exactly
+assertable in tests; a failed upload leaves the capture pending with its capture ID,
+staged link and object key untouched, so the retry is the identical write to the identical
+key. Promotion happens only after the write returns, and if the rename itself fails the
+capture stays consistently pending and only the promotion is retried — re-uploading would
+be a second write of bytes the store already has. Release then runs through
+`releaseIfUnheld`, which treats a remaining link as the expected steady state rather than
+a failure, since Ray keeps a rotated segment until its backup count rolls it off.
+
+Backpressure arrived in the same tranche, through `stagedBytes` and `intakeGate`. Staging
+is bounded by a high-water and low-water pair, validated by `validateWatermarks` so that a
+configuration which could never resume, or would resume the instant it paused, is rejected
+at construction. The gate pauses *intake only*: nothing already captured is ever evicted,
+because deleting pending data to accept newer pending data would trade one loss for
+another and lose the older segment for certain. `ENOSPC` from `os.Link` is handled
+separately from the watermarks, since another process can fill the volume regardless of
+what the collector is holding, and it is cleared only by evidence — a release that freed
+blocks, or a probe link that succeeded — never by elapsed time. Byte accounting can also
+declare itself untrusted through `markStale` and `recompute`; an untrusted total may still
+pause intake, erring towards holding back, but may never resume it.
+
+The wiring that connects all of this to `RayLogHandler` is in the working tree and not yet
+committed: `rotated_runtime.go` with its `rotatedSupervisor`, a companion
+`rotated_runtime_test.go`, and modifications to `collector.go` that start the subsystem
+before the legacy goroutines and shut it down before the final walk. That tranche is still
+under review by me, and the Current Status section below says plainly what that means.
+
+### Testing and Validation
+
+The committed tranches carry 111 test functions across five files, and they are written to
+exercise the real filesystem rather than a model of it: real files, real hard links, real
+link counts, with only the clock, the ticker, the watcher and the link call itself made
+injectable so that races can be driven deterministically instead of waited on.
+
+The naming and state tests pin down identity. `TestCaptureIDSurvivesRestart` and
+`TestCaptureIDFormatAndUniqueness` check that IDs remain unique across a simulated
+restart, which is the property that stops a restarted collector minting an ID that an
+earlier object already used; `TestObjectKeyIsFlatAndOwnerAware` checks that keys stay flat
+beside a node's other logs and that RayJob and RayService clusters keep nesting under the
+owner name; `TestNewStagedEntryRejectsUnsafeComponents` and
+`TestParseStagedPathRejectsMalformed` cover the path-validation surface;
+`TestCaptureIndexAddIsIdempotentPerInode` and
+`TestCaptureIndexDistinctInodesAreDistinctCaptures` are the two halves of the
+rename-versus-reuse question.
+
+The filesystem tests establish that capture actually defeats rotation.
+`TestCaptureSurvivesRotationAndDeletion` links a segment, renames the original from `.1`
+to `.2`, confirms the staged link still reports the same inode with a link count of two,
+deletes the rotated file, and confirms the inode is unchanged, the count has fallen to
+one, and the content is readable in full. `TestCaptureOfSuccessiveSegmentsAtSamePath`
+proves the inverse: two generations at the same rotation filename report different inodes,
+because the first link is still holding the old one alive, and therefore receive distinct
+capture IDs and distinct object keys.
+`TestReleaseCaptureRequiresUploadedAndLastLink`, `TestReleaseCaptureRefusesWhenInodeChanged`
+and `TestPromoteCaptureFailureLeavesDiskAndIndexPending` cover the state machine's
+refusals rather than its happy path.
+
+The discovery tests target the ugly cases. `TestCollectorWatchesTreeBeforeReconstruction`
+holds the collector inside the reconstruction window and proves the tree is already
+covered; `TestCollectorPeriodicReconciliationCatchesMissedEvents` and
+`TestCollectorReconcilesImmediatelyAfterOverflow` cover the two ways events go missing;
+`TestCollectorPinsTheInodeItActuallyLinked` and
+`TestCollectorCapturesGenerationThatReplacedACapturedOne` cover the rename race that
+motivated reading the inode back from the link; `TestCollectorStagingConflictResolutionIsDeterministic`
+and `TestCollectorFailsWhenStagingCannotBeRead` cover restart reconstruction, including
+the cases where startup is supposed to fail rather than proceed; and
+`TestCollectorStateIsOnlyTouchedByTheOwnerLoop` is a structural assertion about the
+concurrency model itself.
+
+The upload tests cover the lifecycle end to end.
+`TestUploadRetriesFollowBackoffAndReuseTheSameKey` asserts the retry schedule and that
+every attempt writes the same key; `TestRemoteSuccessWithLocalPromotionFailureRetriesPromotionOnly`
+covers the case where the bytes are safe but the local rename failed;
+`TestRestartDoesNotReuploadUploadedEntries` and
+`TestRestartReleasesReconstructedUploadedEntries` cover adoption after a restart;
+`TestUploadedCaptureIsReleasedOnlyAfterRayLetsGo` covers the release condition;
+`TestBackpressurePausesIntakeWithoutEviction`, `TestHighWaterStopsCaptureWithinOneScan`,
+`TestLaterENOSPCIsNotClearedByAnEarlierSuccess`, `TestENOSPCRecoversWhenSpaceIsFreedExternally`
+and `TestCapacityProbeDoesNotBypassTheWatermark` cover backpressure in both its forms;
+`TestLocalValidationFailureStopsTheCollector` and
+`TestUploadResultFailurePolicySeparatesLocalFromTransport` cover the deliberate decision
+to fail closed on a local contradiction; and
+`TestWorkerDoesNotStartTheRemoteWriteAfterQuit`, `TestLateUploadResultAfterStopCannotMutateState`
+and `TestUploaderStopsWithoutLeakingGoroutines` cover shutdown.
+
+Validation was run on the working tree, which includes the uncommitted wiring, from the
+`historyserver/` module directory. The full collector suite passes under the race
+detector; `go vet` is clean across the module; the module cross-compiles for the
+deployment targets and for a non-Unix target, which is what exercises the
+`rotated_stat_other.go` stub; and `golangci-lint` with the repository's own root
+configuration reports no findings in any `rotated_*` file. The eight findings it does
+report are all in pre-existing upstream files — `collector.go`, `collector_test.go` and
+`endpoint_fetch_once.go` — and I confirmed each one exists in `upstream/master` rather
+than being something this work introduced. The pre-existing collector tests continue to
+pass under the race detector as well, including the newer upstream ones,
+which matters because the argument for this change is that it adds a path rather than
+altering one.
+
+```bash
+cd historyserver
+go test -race -count=1 ./pkg/collector/logcollector/...        # ok, 30.581s
+go vet ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./pkg/collector/...
+golangci-lint run -c ../.golangci.yml ./pkg/collector/logcollector/...
+go test -race -count=1 -v ./pkg/collector/logcollector/runtime/logcollector/ \
+  -run 'TestScanAndProcess|TestProcessLogs_SkipSymlinks|TestIsFileAlreadyPersisted|TestPollActiveSessionChanges|TestNodeIDRefresh'
+```
+
+What has *not* been run is the end-to-end path: no `kind` cluster, no MinIO, no History
+Server retrieval check. Everything above is package-level.
+
+### Challenges and Engineering Decisions
+
+Several things only became visible once the code existed, and each of them changed the
+design rather than being worked around.
+
+The first was that the source path cannot be trusted as the thing being captured. The
+obvious implementation reads the inode of `raylet.out.1`, links it, and records what it
+read. But rotation reuses that filename constantly, so between the read and the link the
+name can already point at a different file, and the staging link would then pin one inode
+while the index recorded another — breaking deduplication, restart recovery and release
+simultaneously. The correction was to read the inode back from the link that was actually
+created and register only that value, with the source inode kept for diagnostics alone.
+For the same reason there is deliberately no dedup shortcut before linking: returning
+early because the source's current inode looks familiar could skip a generation that had
+just replaced it.
+
+The second surfaced when backpressure was added in `f86bd856`, and it changed a function
+signature that had looked settled: `pinnedInode` was extended to return the file's size
+alongside its identity, so that byte accounting describes exactly the file that was
+pinned rather than whatever the source path happens to hold a moment later. The same
+tranche revealed that a disk-full pause, implemented naively, latches permanently — the
+capture path returns before ever attempting a link, so if another process filled the
+volume and this collector holds nothing it can release, nothing would ever discover that
+space came back. The fix was a single capacity probe per maintenance sweep, using a real
+eligible backup so that a successful attempt preserves data instead of merely testing the
+filesystem, and `armProbe` refuses to probe a watermark pause, since that one is the
+collector's own limit rather than the filesystem's.
+
+The third was that retryability cannot be inferred from an error value. A logs directory
+that does not exist yet and a durable staging link that has disappeared both surface as
+`fs.ErrNotExist`, and they are opposites: the first is the session poller running ahead of
+Ray's own directory creation, the second is the staging volume contradicting the index and
+is fatal by design. Classifying on the errno would restart the second every fifteen
+seconds forever. The design was corrected so that nothing is retryable unless it is
+explicitly marked at the point of failure, by `retryableRotated`, and everything else is
+durable by default. The one place that marks a failure retryable is watch installation,
+which can fail because inotify or descriptor limits are momentarily exhausted —
+`isWatchResourceExhausted` covers `ENOSPC`, `EMFILE` and `ENFILE` — and that classifier is
+consulted only for watches, never for captures, where `ENOSPC` means something entirely
+different.
+
+The fourth is the one I cannot engineer away, and it comes from the storage interface
+itself: `storage.StorageWriter.WriteFile` takes no `context.Context`, so an upload that
+has entered the object client cannot be canceled. Shutdown therefore has to be a bounded
+budget rather than a wait. The worker re-checks a quit channel after receiving a job and
+again after local validation, so an upload that has not started never starts, and only a
+write already under way outlives the owner; when that happens its result is discarded and
+the capture stays pending for the next run. The drain budget is deliberately small — a few
+seconds — because everything it spends is taken from the legacy shutdown walk that runs
+after it, and that walk is the pre-existing data path for every file still in the live
+tree. Kubernetes' default 30-second termination grace period is the ceiling both halves
+share, and KubeRay does not raise it for the collector sidecar.
+
+Some decisions went past the minimum a working implementation would need, and they were
+deliberate. Restart reconstruction was built rather than accepting duplicate uploads after
+a restart, because the alternative silently doubles storage for every long-lived cluster.
+Reconstruction is deterministic rather than merely functional: records are put into a
+total order before adoption, so two runs over the same staging tree resolve a conflict
+identically instead of depending on filesystem walk order. Nothing captured is ever
+silently evicted — backpressure stops intake and says so, but never deletes data the
+collector already holds, and the honest cost of that policy is written into the code
+comment rather than left implicit. And failure handling is conservative throughout: an
+unreadable staging subtree stops startup rather than starting without owning links that
+pin inodes; a local contradiction between the index and the volume fails closed rather
+than retrying forever on a transport schedule; and a surplus staging link is removed only
+after confirming it still holds the inode it was recorded with, so a path that has since
+become something else is reported and left alone.
+
+### Current Status and Remaining Work
+
+The five committed tranches are complete: naming and staging paths, capture state,
+hard-link capture, the discovery loop, and the upload lifecycle, each with its own tests,
+all passing under the race detector, vetted, cross-compiled and lint-clean. That is the
+subsystem itself.
+
+The production lifecycle wiring — `rotated_runtime.go`, its tests, and the `collector.go`
+changes that start and stop the subsystem around the existing goroutines — is still in my
+working tree and still under review by me. It is not committed, and I am not treating it
+as finished. End-to-end verification on `kind` with MinIO has not been done, so I have no
+evidence from a running cluster that captured segments land in the bucket for a session
+that never ended. The History Server retrieval path has not been proven either: I have
+read the listing and categorisation code and reasoned about how captured names behave
+there, but I have not confirmed through the API or the UI that a captured segment is
+actually retrievable. No upstream pull request has been opened, and the branch still needs
+rebasing onto current `master` before one could be.
+
+Issue #4830 is not solved. What exists is an implementation of the mechanism, tested at
+the package level, that has not yet been run in the environment it is meant to work in,
+and has not yet been seen by anyone upstream.
+
+---
+
 ## Next Steps
 
 ### Completed in Phase I
@@ -865,12 +1172,12 @@ end of Phase I:
    than empirically, which is the stronger answer for the purpose it serves: deciding what
    the collector is allowed to treat as a rotation backup.
 
-### Phase III (after Phase II validation)
+### Phase III (under way, recorded above)
 
-Implementation begins once Phase II has validated the behaviour and resolved the key
-design risks: specifically, that the loss reproduces as described, and that segment
-identity across renames has a workable answer. Waiting for that is a sequencing decision
-based on evidence, not a hold on anyone else's reply.
+Implementation began once Phase II had resolved the key design risk — segment identity
+across renames — and it is documented in the Phase III section above. Five tranches are
+committed and tested; the production lifecycle wiring is still under review in my working
+tree, cluster-level verification has not been done, and no pull request has been opened.
 
 Maintainer feedback remains pending and will be incorporated into the design if it
 arrives; if it changes the mechanism, I will update this document and say so plainly
