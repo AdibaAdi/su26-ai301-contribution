@@ -8,7 +8,8 @@
 **Fork:** https://github.com/AdibaAdi/kuberay
 **Contribution repo (public):** https://github.com/AdibaAdi/su26-ai301-contribution
 **Working branch:** [`feat/4830-collect-rotated-logs`](https://github.com/AdibaAdi/kuberay/tree/feat/4830-collect-rotated-logs)
-**Status:** Phases I and II complete. Phase III implementation is under way: five tranches are committed to the working branch and tested at the package level, while the production lifecycle wiring is still under review in my working tree. No end-to-end cluster verification, no upstream pull request, and the issue is not solved.
+**Pull request:** [ray-project/kuberay#5101](https://github.com/ray-project/kuberay/pull/5101) — "History Server: collect rotated Ray logs before overwrite"
+**Status:** Phase I complete · Phase II complete · Phase III complete · Phase IV complete — PR #5101 open, awaiting maintainer review
 
 ---
 
@@ -18,19 +19,25 @@ This contribution targets KubeRay issue #4830: the History Server log collector 
 capture Ray's *rotated* log files, so log content that rotates away while a cluster is
 still running is lost before it ever reaches object storage.
 
-For Phase I, I forked the repository, created a local branch from the latest upstream
-`master`, introduced myself on the issue, and completed a read-only investigation of the
-collector code. The issue author asked me to share a design before writing code because
-the task is not straightforward, so I posted a proposed design publicly on the issue with
-the author and project members tagged. Feedback is pending, and Phase II reproduction work
-continues in the meantime.
+The implementation is complete and submitted as
+[PR #5101](https://github.com/ray-project/kuberay/pull/5101), which closes #4830. Eight
+commits on `feat/4830-collect-rotated-logs` add a rotated-log subsystem beside the existing
+collector paths: it discovers completed rotation backups while the pod is running, pins each
+one with a hard link before Ray can reuse the filename, uploads it under a unique key, and
+releases the link once the bytes are in object storage and Ray has let go of its own. The
+pre-existing shutdown walk and `prev-logs` recovery are unchanged.
 
-The sections up to and including the Phase I completion checklist are Phase I work and are
-left as they were written, including the findings I labelled preliminary at the time. The
-Phase II section that follows the checklist records what I went on to confirm, what I had
-to correct, how I reproduced the loss, what the root cause turned out to be, and the
-implementation and validation plan that came out of it. No upstream pull request exists,
-and I am not claiming the issue is solved.
+Validation covers both levels. At the package level there are 179 test functions across six
+new test files, passing under the race detector. End to end, a native arm64 Kind cluster with
+the KubeRay operator, Ray 2.52.0 and MinIO showed 25 rotated segments recovered per node from
+a workload whose local backup ring had already overwritten 20 of them — content that the
+unmodified collector would have lost.
+
+This document is written in phase order and preserves what was known at each point. The
+Phase I sections keep the findings I labelled preliminary at the time; Phase II records what
+I confirmed, what I had to correct, and how the design changed; Phase III records the
+implementation and its testing; Phase IV records the pull request, the verification evidence
+and what remains open.
 
 ---
 
@@ -144,8 +151,9 @@ git rev-list --count upstream/master..feat/4830-collect-rotated-logs
 #   0    -> branch created from upstream master, zero commits ahead
 ```
 
-The branch exists locally and is currently identical to upstream `master`. It has not been
-pushed, because there is nothing on it yet.
+At the time of writing in Phase I the branch existed only locally and was identical to
+upstream `master`, with nothing on it to push. It now carries the eight implementation
+commits listed in Phase III and is pushed to the fork.
 
 ---
 
@@ -175,18 +183,25 @@ All four links below are public comments on issue #4830 and can be opened direct
    publicly on the issue with the author and project members tagged, so the discussion
    happens in the open where anyone reviewing can see it.
 
-**Current state of the conversation:** feedback on the full design is pending. To be
-explicit about what that does and does not mean:
+**State of the conversation as of 7 August 2026:** no reply to the design comment has been
+posted, and no maintainer has commented on PR #5101. To be explicit about what that does and
+does not mean:
 
 - The issue is **not** assigned to me, and I have not asked for it to be.
-- Nobody has approved my proposed design. Pending feedback is exactly that: pending. I am
-  not treating the absence of a reply as agreement.
-- The only thing endorsed so far is the general idea of collecting rotated logs, in the
-  earlier project-member comment (link 1) and in the issue author's own framing.
-- Phase II reproduction and validation continue in the meantime, because reproducing the
-  loss and measuring the rotation behaviour is useful regardless of which mechanism is
-  eventually chosen. Any feedback that arrives will be incorporated into the design and
-  recorded here.
+- Nobody approved the proposed design. The absence of a reply is not agreement, and I did
+  not treat it as such at any point.
+- The only thing endorsed is the general idea of collecting rotated logs, in the earlier
+  project-member comment (link 1) and in the issue author's own framing.
+- I proceeded with reproduction and implementation rather than waiting, because reproducing
+  the loss and characterising the rotation behaviour is useful evidence whichever mechanism
+  is eventually chosen, and because a working implementation with measurements attached is a
+  better basis for review than a proposal alone.
+- The mechanism changed substantially between that design comment and the submitted code —
+  from a filename-based periodic scanner to hard-link pinning with event-driven discovery.
+  The "Proposed Direction" section below is preserved as written so the difference is
+  visible; the Implementation section explains why it changed. Any feedback that arrives on
+  either the issue or the PR will be answered and recorded in the review log at the end of
+  this document.
 
 ---
 
@@ -410,7 +425,8 @@ once there is a shared view of how much loss is acceptable.
 - [x] Preliminary acceptance criteria drafted
 - [x] Risks and open questions written down
 - [x] This Phase I document written and the root README updated
-- [ ] Feedback on the design: pending; will be incorporated if received
+- [ ] Feedback on the design: none received; the design was later revised on engineering
+      grounds and the change is documented in Phase II and Phase III
 - [ ] Issue assignment: not requested, not granted
 
 ---
@@ -422,12 +438,11 @@ once there is a shared view of how much loss is acceptable.
 All Phase II work happens on
 [`feat/4830-collect-rotated-logs`](https://github.com/AdibaAdi/kuberay/tree/feat/4830-collect-rotated-logs)
 in my fork, `AdibaAdi/kuberay`, which is pushed and tracked as
-`origin/feat/4830-collect-rotated-logs`. The branch was created from upstream `master`, and
-since Phase I it has been rebased onto a newer upstream commit; upstream has continued to
-move, and `ray-project/kuberay` `master` is at `dc3afe89` (2026-07-31) as of this writing,
-which is not yet an ancestor of my branch. Rebasing again before any pull request is
-therefore part of the plan rather than an afterthought, and the section on what changed
-underneath me explains why that matters more than usual here.
+`origin/feat/4830-collect-rotated-logs`. The branch was created from upstream `master` and has
+been rebased more than once as upstream moved; it was rebased onto `dc3afe89` (2026-07-31)
+before the pull request was opened, which is the base the submitted commits sit on. Rebasing
+was treated as part of the plan rather than an afterthought, and the section on what changed
+underneath me explains why that matters more than usual in this subtree.
 
 The History Server is its own Go module: `historyserver/go.mod` declares
 `module github.com/ray-project/kuberay/historyserver` and requires Go 1.26, so every build,
@@ -449,12 +464,12 @@ cluster. That was a deliberate choice and not only a convenience one. The behavi
 question is filesystem lifecycle — rename, unlink, link count, inode reuse — and a
 `kind` cluster reproduces none of it more faithfully than the local filesystem does; what a
 cluster adds is the sidecar wiring, the object-store round trip and the History Server's
-retrieval path. I want that end-to-end confirmation too, and the walkthrough in
-`historyserver/DEVELOPMENT.md` (kind, the KubeRay operator via Helm,
+retrieval path. That end-to-end confirmation was done later, in Phase III, following the
+walkthrough in `historyserver/DEVELOPMENT.md` (kind, the KubeRay operator via Helm,
 `make -C historyserver localimage-build`, `kind load docker-image` for `collector:v0.1.0`
-and `historyserver:v0.1.0`, then `historyserver/config/minio.yaml`) is the route I intend to
-follow for it. I have not run that end-to-end path yet, and I say so plainly rather than
-implying a cluster-level result I do not have.
+and `historyserver:v0.1.0`, then `historyserver/config/minio.yaml`); the results are in the
+"Manual Kind and MinIO integration" section. At the time this Phase II section was written
+it had not been run, and the package-level reasoning below stands on its own.
 
 Two concrete environment problems came up and were worth the time they cost.
 
@@ -740,6 +755,11 @@ acceptable at all, how much staging space a sidecar may consume before intake sh
 and whether the shared-volume assumption holds for deployments that do not use the layout in
 `historyserver/config/raycluster.yaml`.
 
+In the event I did not do this: the revised mechanism was explained in the pull request
+description and in this document, but no follow-up comment was posted on issue #4830 between
+the original design and the pull request. That gap is mine, and it is revisited under "What I
+Would Do Differently".
+
 Automated validation is table-driven Go tests beside each new file, in the package's existing
 style, exercising the real filesystem rather than a mock of it: real files, real hard links,
 real link counts, with only the clock, the ticker, the watcher and the link call itself made
@@ -758,14 +778,14 @@ exercises the shutdown walk and the `prev-logs` dedupe through `MockStorageWrite
 `TestIsFileAlreadyPersisted`, and those must keep passing untouched, together with
 `go vet ./...` and the repository's lint configuration.
 
-End-to-end validation is the piece still outstanding, and it is what the `kind` and MinIO
-walkthrough in `historyserver/DEVELOPMENT.md` exists for. The shape of it is to bring up the
-cluster, operator, MinIO and the data-generating `RayCluster`, lower `RAY_ROTATION_MAX_BYTES`
-and `RAY_ROTATION_BACKUP_COUNT` on the Ray containers so segments rotate in seconds, generate
-enough log volume to cycle through several rotations while the cluster stays up, and then
-confirm two things that no unit test can: that the captured segments are present in the
-`ray-historyserver` bucket for a session that never ended, and that they are visible through
-the History Server's node-log listing rather than merely present in storage.
+End-to-end validation was planned here and carried out in Phase III. The shape of it is to
+bring up the cluster, operator, MinIO and the data-generating `RayCluster`, lower
+`RAY_ROTATION_MAX_BYTES` and `RAY_ROTATION_BACKUP_COUNT` on the Ray containers so segments
+rotate in seconds, generate enough log volume to cycle through several rotations while the
+cluster stays up, and then confirm two things that no unit test can: that the captured
+segments are present in the `ray-historyserver` bucket for a session that never ended, and
+that they are visible through the History Server's node-log listing rather than merely
+present in storage. Both were confirmed; see "Manual Kind and MinIO integration".
 
 ### Risks Carried Into Implementation
 
@@ -837,15 +857,30 @@ prefer that one of the two paths yield to the other.
 
 Implementation lives on
 [`feat/4830-collect-rotated-logs`](https://github.com/AdibaAdi/kuberay/tree/feat/4830-collect-rotated-logs)
-in my fork and is pushed to `origin`. Five commits sit on top of upstream `d36899dd`, all
-authored on 2026-07-31, and they were deliberately shaped as tranches that each stand on
-their own: every one compiles, is covered by its own tests, and adds a layer the next one
-builds on. Reviewing them in order is meant to be easier than reviewing the whole
-subsystem at once, and it also meant that when a later tranche found a flaw in an earlier
-assumption, the correction landed as a visible change rather than being quietly folded
-into an unreviewable diff.
+in my fork and is pushed to `origin`. Eight commits sit on top of upstream `dc3afe89`, and
+they were deliberately shaped as tranches that each stand on their own: every one compiles,
+is covered by its own tests, and adds a layer the next one builds on. Reviewing them in order
+is easier than reviewing the whole subsystem at once, and it also meant that when a later
+tranche found a flaw in an earlier assumption, the correction landed as a visible change
+rather than being quietly folded into an unreviewable diff.
 
-**`c04a4e0b` — [History Server] Add rotated log naming and staging paths** introduces
+```
+c2ba7533  2026-07-31  [History Server] Add rotated log naming and staging paths
+76c3b782  2026-07-31  [History Server] Add rotated log capture state
+a72d8578  2026-07-31  [History Server] Add rotated log hard-link capture
+11e7dd40  2026-07-31  [History Server] Add rotated log discovery loop
+f0a5d424  2026-07-31  [History Server] Add rotated log upload lifecycle
+129e0102  2026-08-02  [History Server] Wire rotated log collection into runtime
+2d45c6f0  2026-08-06  [History Server] Bound rotated log staging retention
+5b8db49a  2026-08-07  [History Server] Keep resolved session path on fallback
+```
+
+The hashes changed once since Phase III began: the branch was rebased from `d36899dd` onto
+`dc3afe89` before the pull request was opened, so earlier drafts of this document cited the
+pre-rebase hashes. The eight above are the ones on the submitted branch; the last was pushed
+after the pull request was opened, in response to the automated review recorded in Phase IV.
+
+**`c2ba7533` — [History Server] Add rotated log naming and staging paths** introduces
 `rotated_names.go` (352 lines) with `rotated_names_test.go` (486 lines) and adds eight
 lines to `historyserver/pkg/utils/constant.go`. It answers the two questions everything
 else depends on: what counts as a rotation backup, and where a captured one lives. Ray's
@@ -869,7 +904,7 @@ because it is a directory level, not a field in memory, and
 beside `prev-logs` rather than inside it, since the `prev-logs` walker uploads and then
 deletes whole node directories.
 
-**`0ac2a1a8` — [History Server] Add rotated log capture state** adds `rotated_state.go`
+**`76c3b782` — [History Server] Add rotated log capture state** adds `rotated_state.go`
 (145 lines) and `rotated_state_test.go` (226 lines). This is the in-memory half of
 identity: `inodeKey` pairs device and inode, `capture` binds that key to its staged entry,
 and `capture.releasable` encodes the two-part release condition — uploaded, and a link
@@ -884,7 +919,7 @@ directory, which is what lets a backup still be recognised during the instant a 
 cascade leaves the active name unlinked. `validTransition` allows exactly one durable
 state change, `pending` to `uploaded`, and nothing moves back.
 
-**`0507b2be` — [History Server] Add rotated log hard-link capture** adds `rotated_fs.go`
+**`a72d8578` — [History Server] Add rotated log hard-link capture** adds `rotated_fs.go`
 (178 lines), `rotated_fs_test.go` (765 lines), and the platform split
 `rotated_stat_unix.go` (26 lines) and `rotated_stat_other.go` (15 lines). `captureLink`
 is the operation the whole design rests on: a hard link into staging, which costs no copy
@@ -900,7 +935,7 @@ classifiers `isUnsupportedLinkError` (`EXDEV`, `EPERM`, `EACCES`), `isVanished` 
 `isAlreadyStaged` separate a deployment that cannot support capture from a race lost to
 rotation from an outright bug.
 
-**`fe14aa1f` — [History Server] Add rotated log discovery loop** adds
+**`11e7dd40` — [History Server] Add rotated log discovery loop** adds
 `rotated_collector.go` (712 lines) and `rotated_collector_test.go` (1579 lines). This is
 where discovery becomes continuous. `rotatedCollector` runs one goroutine that owns all
 state; `fsnotify` watches are installed recursively over the session's `logs/` tree by
@@ -921,7 +956,7 @@ capture ID, then path) so nothing depends on walk order, a surplus link is remov
 after confirming it still holds the inode it was recorded with, and an unreadable staging
 subtree stops startup rather than leaving links pinning inodes that nothing owns.
 
-**`f86bd856` — [History Server] Add rotated log upload lifecycle** adds
+**`f0a5d424` — [History Server] Add rotated log upload lifecycle** adds
 `rotated_uploader.go` (1090 lines) and `rotated_uploader_test.go` (2097 lines), and
 revises `rotated_collector.go` and `rotated_names.go` in the process. Uploading is pushed
 onto a worker and never performed on the owner goroutine, because a `WriteFile` sitting
@@ -954,18 +989,90 @@ blocks, or a probe link that succeeded — never by elapsed time. Byte accountin
 declare itself untrusted through `markStale` and `recompute`; an untrusted total may still
 pause intake, erring towards holding back, but may never resume it.
 
-The wiring that connects all of this to `RayLogHandler` is in the working tree and not yet
-committed: `rotated_runtime.go` with its `rotatedSupervisor`, a companion
-`rotated_runtime_test.go`, and modifications to `collector.go` that start the subsystem
-before the legacy goroutines and shut it down before the final walk. That tranche is still
-under review by me, and the Current Status section below says plainly what that means.
+**`129e0102` — [History Server] Wire rotated log collection into runtime** adds
+`rotated_runtime.go` (891 lines) with `rotated_runtime_test.go`, and reworks `collector.go`.
+`rotatedSupervisor` owns at most one collector at a time and binds it to one session on one
+node, because both values are baked into every staging path and every object key; a change to
+either half retires the old collector completely — final reconciliation, bounded drain, stop,
+goroutine join — before the replacement is constructed, so the staging root never has two
+owners. `preflight` rejects, once per identity, the deployment conditions the collector would
+otherwise discover one segment at a time: a missing logs directory, a staging root it cannot
+write to or clean up, a platform without inode identity, and a staging root on a different
+filesystem from the logs, where a hard link cannot reach.
+
+In `collector.go` the changes are in three places. `Run` starts rotated collection before the
+existing goroutines, since a segment rotated away in the first seconds of a session is already
+gone by the time the shutdown walk runs. `shutdownLogCollection` replaces the direct call to
+`processSessionLatestLogs` with an ordered sequence: close session-transition admission and
+wait for one already in flight, retire the rotated subsystem with a bounded drain, then run
+the existing walk from an immutable snapshot of what the live session meant when shutdown
+began. And `PollActiveSessionChanges` was restructured around an explicit `sessionTransition`
+so that each outgoing session is relocated under the node it actually ran on, rather than
+under whichever node ID happened to be current — the previous code passed a single node ID to
+`MoveLeftoverSessionLogs`, which stamps every inactive session directory with it.
+
+**`2d45c6f0` — [History Server] Bound rotated log staging retention** came out of reviewing
+the branch as a whole rather than from a failing test. A capture is a
+hard link, so while uploads are failing the collector keeps inodes alive that Ray has already
+released, and nothing bounded that. The commit adds a second byte total: `StagedBytes` stays
+what it was, the logical size of everything pinned, and `RetainedBytes` counts only captures
+where the collector holds the last link (`nlink == 1`) — the bytes that exist because of this
+feature. Backpressure is driven by the second. The distinction matters because a capture Ray
+still has its own link to shares Ray's blocks and costs nothing extra, so gating on the
+logical total would have charged the collector for Ray's entire backup ring and paused
+capture during ordinary healthy rotation. Link counts come from stats the code already
+performed and previously discarded, are rebuilt from the filesystem on restart, and are
+refreshed in the existing reconcile sweep, since Ray unlinking its own name changes nothing
+about the staging path and produces no event.
+
+**`5b8db49a` — [History Server] Keep resolved session path on fallback** is the last commit
+and answers the automated review finding recorded in Phase IV. `PollActiveSessionChanges`
+seeds its transition state with the symlink-resolved form of the configured `SessionDir`,
+because every later observation is a resolved symlink target and `advanceSession` compares the
+two by string. The fallback taken when `session_latest` cannot be resolved used the raw
+configured value instead, so two spellings of one directory compared unequal and the still-
+running session was treated as an outgoing one: its `logs/` directory was queued for
+relocation into `prev-logs` and its verified node identity was cleared. The two spellings are
+reachable because `utils.GetSessionDir` falls back to `os.Readlink`, which resolves only the
+`session_latest` link and leaves any symlinked component above it in place. The correction is
+to fall back to the already-resolved `startupDir`, so the fallback value is always the string
+`st.dir` holds; no path canonicalisation was introduced anywhere else. Nothing is suppressed
+by declining to act, since `SessionDir` names the session the poller started with and can
+never be evidence of a new one, and the first tick that resolves `session_latest` observes any
+real change. `TestPollActiveSessionChangesFallbackKeepsTheResolvedSessionPath` is the
+regression test.
+
+### Key files changed
+
+| Path | Lines | Role |
+|---|---:|---|
+| `rotated_names.go` | 361 | Rotation-name parsing, capture IDs, object keys, staged-path validation |
+| `rotated_state.go` | 145 | `inodeKey`, `capture`, `captureIndex`, release predicate, base-name memory |
+| `rotated_fs.go` | 192 | `captureLink`, `promoteCapture`, `releaseCapture`, error classifiers |
+| `rotated_stat_unix.go` / `rotated_stat_other.go` | 26 / 15 | `inodeFromFileInfo` behind a build constraint |
+| `rotated_collector.go` | 992 | Owner goroutine, fsnotify watches, reconcile sweep, capture, staging reconstruction |
+| `rotated_uploader.go` | 1155 | Upload worker, retry scheduler, byte accounting, intake gate |
+| `rotated_runtime.go` | 891 | `rotatedSupervisor`, preflight, failure classification, bounded drain |
+| `collector.go` | +623 / −67 | Subsystem start-up and shutdown ordering, session-transition rework |
+| `pkg/utils/constant.go` | +8 | `GetRayRotatedStagingPath` |
+
+Test files add 8,383 lines across `rotated_names_test.go`, `rotated_state_test.go`,
+`rotated_fs_test.go`, `rotated_collector_test.go`, `rotated_uploader_test.go` and
+`rotated_runtime_test.go`. The whole change is 16 files against `upstream/master`, and it
+touches no package outside `historyserver/pkg/collector/logcollector/runtime/logcollector`
+except the one path helper in `pkg/utils/constant.go`.
 
 ### Testing and Validation
 
-The committed tranches carry 111 test functions across five files, and they are written to
-exercise the real filesystem rather than a model of it: real files, real hard links, real
-link counts, with only the clock, the ticker, the watcher and the link call itself made
-injectable so that races can be driven deterministically instead of waited on.
+The branch carries 179 test functions across six files — 13 in `rotated_names_test.go`, 9 in
+`rotated_state_test.go`, 18 in `rotated_fs_test.go`, 34 in `rotated_collector_test.go`, 41 in
+`rotated_uploader_test.go` and 64 in `rotated_runtime_test.go`. They are written to exercise
+the real filesystem rather than a model of it: real files, real hard links, real link counts,
+with only the clock, the ticker, the watcher, the storage writer and the link call itself made
+injectable so that races can be driven deterministically instead of waited on. They follow the
+package's existing conventions — the in-memory `storage.StorageWriter` fake and temp-root
+fixture patterns established by `collector_test.go` — rather than introducing a parallel
+harness.
 
 The naming and state tests pin down identity. `TestCaptureIDSurvivesRestart` and
 `TestCaptureIDFormatAndUniqueness` check that IDs remain unique across a simulated
@@ -1018,33 +1125,113 @@ to fail closed on a local contradiction; and
 `TestWorkerDoesNotStartTheRemoteWriteAfterQuit`, `TestLateUploadResultAfterStopCannotMutateState`
 and `TestUploaderStopsWithoutLeakingGoroutines` cover shutdown.
 
-Validation was run on the working tree, which includes the uncommitted wiring, from the
-`historyserver/` module directory. The full collector suite passes under the race
-detector; `go vet` is clean across the module; the module cross-compiles for the
-deployment targets and for a non-Unix target, which is what exercises the
+The retention accounting added in `2d45c6f0` has its own regression coverage, because the
+mistake it corrects is one that unit tests could easily have missed.
+`TestRetainedBytesExcludeBlocksRayStillOwns` captures a 500-byte segment while Ray's link is
+intact against a 10-byte watermark and asserts `StagedBytes` is 500, `RetainedBytes` is zero,
+and intake stays open — reverting the gate to the logical total makes this test fail, which is
+what makes it a regression test rather than a passing one.
+`TestRetainedBytesCountCapturesRayHasRolledOff` removes only Ray's link and asserts that a
+reconcile sweep moves the same 500 bytes into `RetainedBytes`, which is the transition no
+filesystem event announces. `TestOutageRetainsBoundedDiskThenResumes` drives the whole outage
+sequence: writes fail, retained bytes cross the high mark, intake pauses, nothing already
+captured is evicted, retries keep running, and once writes succeed the sole links release and
+intake reopens. `TestReconstructionComputesRetainedFromLinkCounts` starts a collector over a
+staging tree holding one shared and one sole-owned capture and asserts the split is rebuilt
+from link counts alone. `TestRuntimeConfiguresBoundedIntake` is the wiring test: it asserts
+that the supervisor-built production configuration actually carries a positive high-water
+mark with a lower low-water mark, which is the gap that let an earlier revision ship with
+backpressure implemented but switched off.
+
+Validation runs from the `historyserver/` module directory. The full collector suite passes
+under the race detector; `go vet` is clean across the module; the module cross-compiles for
+the deployment targets and for a non-Unix target, which is what exercises the
 `rotated_stat_other.go` stub; and `golangci-lint` with the repository's own root
-configuration reports no findings in any `rotated_*` file. The eight findings it does
-report are all in pre-existing upstream files — `collector.go`, `collector_test.go` and
-`endpoint_fetch_once.go` — and I confirmed each one exists in `upstream/master` rather
-than being something this work introduced. The pre-existing collector tests continue to
-pass under the race detector as well, including the newer upstream ones,
-which matters because the argument for this change is that it adds a path rather than
-altering one.
+configuration reports no findings in any `rotated_*` file. The eight findings it does report
+are all in pre-existing upstream files — `collector.go`, `collector_test.go` and
+`endpoint_fetch_once.go` — and I confirmed each one exists in `upstream/master` rather than
+being something this work introduced. The pre-existing collector tests continue to pass under
+the race detector as well, which matters because the argument for this change is that it adds
+a path rather than altering one.
 
 ```bash
 cd historyserver
-go test -race -count=1 ./pkg/collector/logcollector/...        # ok, 30.581s
+go test -race -count=1 ./pkg/collector/logcollector/runtime/logcollector
+go test -race -count=1 ./pkg/collector/...
+go test -count=1 ./pkg/storage/...
+go test -count=1 ./pkg/utils/...
 go vet ./...
+go build ./...
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./pkg/collector/...
 golangci-lint run -c ../.golangci.yml ./pkg/collector/logcollector/...
-go test -race -count=1 -v ./pkg/collector/logcollector/runtime/logcollector/ \
-  -run 'TestScanAndProcess|TestProcessLogs_SkipSymlinks|TestIsFileAlreadyPersisted|TestPollActiveSessionChanges|TestNodeIDRefresh'
 ```
 
-What has *not* been run is the end-to-end path: no `kind` cluster, no MinIO, no History
-Server retrieval check. Everything above is package-level.
+The rotated-log package was also run repeatedly under the race detector rather than once,
+including in-process repeats with `-count=3` to surface state leaking between runs. During
+that stress one pre-existing test, `TestRuntimeConcurrentSessionChangesKeepOneOwner`, was
+found to depend on goroutine scheduling: it called `ensureRotatedCollection` directly and
+asserted immediately, without the round trip through the owner goroutine that the harness uses
+elsewhere, so a timing change in an unrelated commit could break it. It now synchronises the
+same way the rest of the harness does. Earlier in the branch's life the subsystem was also put
+through a mutation-testing pass and a `git diff --check` and clean-apply check against the
+original upstream baseline.
+
+### Manual Kind and MinIO integration
+
+Package tests cannot show that a captured segment reaches a bucket, so the flow was run end to
+end on a local cluster: `kind`, the KubeRay operator installed via Helm, `rayproject/ray:2.52.0`,
+MinIO for object storage, and the collector and History Server images built from this branch.
+The run was performed manually rather than as an automated e2e suite, and it was performed at
+commit `129e0102`; the two commits added afterwards, `2d45c6f0` and `5b8db49a`, are covered by
+the package and race tests rather than by this cluster run.
+
+The workload is deliberately deterministic rather than "generate some logs". Rotation was
+configured with `RAY_ROTATION_MAX_BYTES=65536` and `RAY_ROTATION_BACKUP_COUNT=5`, and one Ray
+task was hard-pinned to the head node and one to the worker, each emitting 6,400 uniquely
+marked 256-byte lines carrying a run-unique marker, the node role, and a sequence number. That
+gives 1,638,400 bytes per node against a 65,536-byte rotation threshold: 25 rotations per node,
+against a backup ring five deep. The arithmetic is the point — 20 of those 25 rotations per node
+must have been overwritten locally during the run.
+
+Observed:
+
+- 25 marked rotated objects were uploaded for the head node and 25 for the worker.
+- All 50 landed under the correct session and Ray node prefixes, with no head/worker
+  cross-attribution.
+- MinIO `lastModified` timestamps for every object fall between 02:30:25Z and 02:30:50Z, while
+  both Ray pods were still `Running` and `Ready`; the objects were listed and downloaded at
+  02:54:34Z with the pods still up. Collection happened during the run, not at shutdown.
+- Ray and collector restart counts stayed at zero throughout.
+- MinIO held marked sequences 1 through 6,399 for each node.
+- The live pod filesystems held only sequences 5,120 through 6,400 — the active file plus five
+  backups. Sequences 1 through 5,119 were gone from both pods.
+
+That last pair is the result the issue asks for: 20 of the 25 rotations per node had already
+been overwritten on the node and were recoverable only from object storage.
+
+### Archived History Server verification
+
+Storage alone is not the deliverable; the History Server has to be able to serve the content.
+After deleting the `RayCluster`:
+
+- All 50 marked objects remained in MinIO.
+- The History Server discovered the archived session and served it through `/enter_cluster`.
+- The archived node-log listing returned all 25 rotated filenames for the head node and all 25
+  for the worker.
+- One marked head object and one marked worker object were downloaded through the History
+  Server's log-download route, with the correct marker, the correct role and the correct
+  sequence range in each.
+- An ordinary non-rotated `raylet.out` was listed and downloaded through the same route,
+  confirming the pre-existing path still works alongside the new one.
+
+Two qualifications belong with that result. The History Server's download handler is
+line-oriented and omits the final trailing newline, so a downloaded object is one byte shorter
+than the stored object; every other byte matched, and the behaviour is pre-existing and
+unrelated to rotated capture. And a collector-side `.rotated.*` filename returns not-found on
+the *live* log route, because that route proxies Ray's dashboard, which only knows Ray's own
+local filenames; the archived object-storage route is the one that lists and serves these
+objects, and it does.
 
 ### Challenges and Engineering Decisions
 
@@ -1062,7 +1249,7 @@ For the same reason there is deliberately no dedup shortcut before linking: retu
 early because the source's current inode looks familiar could skip a generation that had
 just replaced it.
 
-The second surfaced when backpressure was added in `f86bd856`, and it changed a function
+The second surfaced when backpressure was added in `f0a5d424`, and it changed a function
 signature that had looked settled: `pinnedInode` was extended to return the file's size
 alongside its identity, so that byte accounting describes exactly the file that was
 pinned rather than whatever the source path happens to hold a moment later. The same
@@ -1114,83 +1301,272 @@ than retrying forever on a transport schedule; and a surplus staging link is rem
 after confirming it still holds the inode it was recorded with, so a path that has since
 become something else is reported and left alone.
 
-### Current Status and Remaining Work
+The fifth challenge came from the integration environment rather than the code. My first
+attempt built the whole cluster as `linux/amd64` under emulation on an arm64 host. `kubeadm`
+got as far as writing the static pod manifests, but no container was ever created, and the
+kubelet logged `failed to generate seccomp spec opts: seccomp is not supported` 4,296 times.
+Reading `/proc/self/status` inside the emulated node confirmed `Seccomp: 0` — the emulated
+runtime does not expose seccomp at all, so containerd cannot construct a sandbox spec. That is
+an environment limitation rather than anything to do with this change, and the fix was to stop
+fighting it: rebuild the cluster natively on arm64 with an arm64 node image and arm64 builds of
+the operator, collector, History Server, Ray and MinIO. Everything after that point ran on the
+host's own architecture.
 
-The five committed tranches are complete: naming and staging paths, capture state,
-hard-link capture, the discovery loop, and the upload lifecycle, each with its own tests,
-all passing under the race detector, vetted, cross-compiled and lint-clean. That is the
-subsystem itself.
-
-The production lifecycle wiring — `rotated_runtime.go`, its tests, and the `collector.go`
-changes that start and stop the subsystem around the existing goroutines — is still in my
-working tree and still under review by me. It is not committed, and I am not treating it
-as finished. End-to-end verification on `kind` with MinIO has not been done, so I have no
-evidence from a running cluster that captured segments land in the bucket for a session
-that never ended. The History Server retrieval path has not been proven either: I have
-read the listing and categorisation code and reasoned about how captured names behave
-there, but I have not confirmed through the API or the UI that a captured segment is
-actually retrievable. No upstream pull request has been opened, and the branch still needs
-rebasing onto current `master` before one could be.
-
-Issue #4830 is not solved. What exists is an implementation of the mechanism, tested at
-the package level, that has not yet been run in the environment it is meant to work in,
-and has not yet been seen by anyone upstream.
+The sixth is the one that survived longest without being noticed, and it was found by reviewing
+the branch rather than by any failing test. Backpressure was measured against the logical size
+of everything staged. But a capture is a hard link, so while Ray still holds its own link to a
+rotated segment the blocks are shared and the collector is costing nothing extra; those bytes
+only become the collector's responsibility once Ray rolls the segment off its ring and the
+staging link is the last reference. Charging for the shared case meant the watermark tracked
+Ray's entire backup ring, which at Ray's default 512 MiB rotation size is roughly 2.5 GiB for a
+single log file — enough to pause capture permanently during completely healthy operation and
+silently stop the feature doing its job. The correction was to keep the logical figure as a
+diagnostic and add `RetainedBytes`, counting only captures with `nlink == 1`, and to drive
+backpressure from that. What made it a small change rather than a redesign is that the link
+count was already being read at every accounting site and thrown away.
 
 ---
 
-## Next Steps
+## Phase IV: Pull Request and Verification
 
-### Completed in Phase I
+### Pull request
 
-Fork and branch setup, issue-selection evidence, community introduction, the read-only
-code investigation summarised above, and the public design comment. This document is the
-Phase I deliverable.
+| | |
+|---|---|
+| Pull request | [ray-project/kuberay#5101](https://github.com/ray-project/kuberay/pull/5101) |
+| Title | History Server: collect rotated Ray logs before overwrite |
+| Closes | [#4830](https://github.com/ray-project/kuberay/issues/4830) |
+| Base | `ray-project/kuberay` `master` |
+| Head | `AdibaAdi/kuberay` `feat/4830-collect-rotated-logs` |
+| Head commit | `5b8db49a` (8 commits ahead of `upstream/master`, 0 behind) |
+| Opened | 7 August 2026 |
+| Status | Open, awaiting maintainer review; CI in progress on the latest commit |
 
-### Phase II (complete, recorded above)
+The description follows KubeRay's pull request template and opens under "Why are these changes
+needed?" with the problem rather than the mechanism: Ray rotates logs to bound local disk, the
+collector previously relied on collecting the remaining log directory at shutdown or through
+`prev-logs` recovery, and for long-running workloads that means an older backup can be
+overwritten before it is ever uploaded, leaving part of the history unrecoverable even though
+object storage has no such limit. It then covers head and worker support, hard-link
+preservation, the `.rotated.<capture-id>` naming that keeps successive generations of a reused
+filename distinct, event-driven discovery with periodic reconciliation as a backstop, staging
+and restart reconstruction, the upload and retry lifecycle, session and node identity across
+transitions, and the retained-byte backpressure with its 1 GiB and 512 MiB watermarks. It
+closes #4830, and records that unit tests and manual tests were run, with the validation
+commands listed.
 
-Phase II proceeded without waiting for feedback, because reproducing the loss and
-characterising the rotation behaviour is useful evidence whichever mechanism is eventually
-chosen. The full account is in the Phase II section above. Against the plan I wrote at the
-end of Phase I:
+### Verification
 
-1. The environment work was done at the Go package level rather than in a cluster, for the
-   reasons given under Development Environment. The `kind` and MinIO walkthrough in
-   `historyserver/DEVELOPMENT.md` remains the route for end-to-end confirmation and has not
-   been run yet.
-2. Ray's rotation naming was settled by tracing Ray's own implementation, including the
-   spdlog rotation patch, rather than by observing one image's behaviour with reduced
-   `RAY_ROTATION_MAX_BYTES` and `RAY_ROTATION_BACKUP_COUNT` values.
-3. The loss was reproduced at the package level and traced to a single shutdown-time call
-   site; the cluster-level demonstration in MinIO is still outstanding.
-4. Preliminary findings 1 and 4 were both confirmed against current upstream `master`.
-5. Segment identity across renames was resolved with evidence: a hard-link pin plus a
-   generated capture ID, with the inode used only while the collector's own link keeps it
-   alive.
-6. PR #4983 has merged upstream, so the question of waiting for it or building on it no
-   longer applies; the relevant upstream churn is now #4918, #5050 and #5067.
-7. Which components rotate under which filenames was answered from Ray's source rather
-   than empirically, which is the stronger answer for the purpose it serves: deciding what
-   the collector is allowed to treat as a rotation backup.
+Each item below was confirmed by a named test, by the Kind and MinIO run, or by both.
 
-### Phase III (under way, recorded above)
+- Completed rotation backups are captured while the pod is running, before Ray reuses the
+  filename. Package: `TestCaptureSurvivesRotationAndDeletion`,
+  `TestCollectorCapturesBeforeSourceIsDeleted`. Cluster: 50 objects uploaded while both pods
+  were `Running` and `Ready`.
+- Distinct generations that occupy the same rotation filename stay distinct.
+  `TestCaptureOfSuccessiveSegmentsAtSamePath`,
+  `TestCollectorCapturesGenerationThatReplacedACapturedOne`,
+  `TestSuccessiveGenerationsProduceDistinctKeys`. Cluster: 25 distinct objects per node, all
+  from the reused `.1` name.
+- The head collector is validated: 25 marked objects, correct head node ID.
+- The worker collector is validated: 25 marked objects, correct worker node ID.
+- Session and node attribution is correct, with no cross-attribution between head and worker
+  across all 50 objects. `TestPollActiveSessionChangesFilesEachSessionUnderItsOwnNode`,
+  `TestPollActiveSessionChangesNeverFallsBackToThePreviousNode`.
+- Duplicate capture and duplicate upload are prevented, by inode identity, by upload state, by
+  a single in-flight job, and by matching a returning result against the capture it was
+  submitted for. `TestNoDuplicateQueueOrInFlightJobs`,
+  `TestCollectorDiscardsSurplusLinkForAnAlreadyCapturedInode`, `TestStaleUploadResultCannotPromote`,
+  `TestRestartDoesNotReuploadUploadedEntries`.
+- Restart recovery adopts the previous run's staging without minting new identities or
+  re-uploading. `TestCollectorReconstructsStagingWithoutNewCaptureIDs`,
+  `TestRestartUploadsPendingWithoutMintingNewIDs`.
+- The archived History Server lists the captured segments: all 25 head rotations and all 25
+  worker rotations.
+- The archived History Server downloads them with correct content and attribution, verified for
+  one head object and one worker object.
+- Ordinary non-rotated collection is unaffected. `TestRotatedAndLegacyObjectKeysAreDisjoint`,
+  `TestLegacyShutdownUploadsEveryLiveFileEvenWhenAlreadyCaptured`,
+  `TestLegacyShutdownUnchangedWithoutRotatedCollection`. Cluster: `raylet.out` listed and
+  downloaded through the same route.
+- Staging retention is bounded during a storage outage, without evicting captured data.
+  `TestOutageRetainsBoundedDiskThenResumes`, `TestRetainedBytesExcludeBlocksRayStillOwns`,
+  `TestRuntimeConfiguresBoundedIntake`.
+- A transient `session_latest` resolution failure is not mistaken for a session change: the
+  live session's logs stay in place rather than being relocated into `prev-logs`, and the
+  verified node identity is unchanged. `TestPollActiveSessionChangesFallbackKeepsTheResolvedSessionPath`.
 
-Implementation began once Phase II had resolved the key design risk — segment identity
-across renames — and it is documented in the Phase III section above. Five tranches are
-committed and tested; the production lifecycle wiring is still under review in my working
-tree, cluster-level verification has not been done, and no pull request has been opened.
+### Before and after
 
-Maintainer feedback remains pending and will be incorporated into the design if it
-arrives; if it changes the mechanism, I will update this document and say so plainly
-rather than quietly reframing what I already wrote. If nothing arrives by the time Phase
-II is complete, I will follow up on the issue with the reproduction results attached,
-which is a better prompt for a reply than a second ping. I will not treat a lack of
-response as agreement with my design.
+The clearest evidence is the arithmetic of the deterministic workload rather than any
+screenshot. Each node emitted 6,400 marked lines of 256 bytes against a 65,536-byte rotation
+threshold with five backups retained, which is 25 rotations per node against a ring that can
+hold five.
+
+Before this change, the collector uploads what is on disk when it runs, so the recoverable set
+is whatever the ring still holds: sequences 5,120 to 6,400 per node, five backups plus the
+active file. Sequences 1 to 5,119 are unlinked by Ray during the run and have no upload path.
+
+After this change, MinIO held all 25 rotations per node, covering sequences 1 to 6,399, while
+the pod filesystems still held only 5,120 to 6,400. Twenty of the twenty-five rotations per node
+existed only in object storage, and all 50 objects survived deletion of the `RayCluster` and were
+listed and downloaded through the History Server afterwards.
+
+### Maintainer Feedback and Review Log
+
+**Human maintainer review.** No maintainer review comments have been received on PR #5101 as of
+7 August 2026. The pull request is open, has no assignee and no requested reviewers, and is
+awaiting review. Upstream CI re-ran on the latest commit and was still in progress when this was
+written, so no CI result is claimed. No response to the original design comment on issue #4830
+has been received either.
+
+**Automated review, and the response to it.** One automated review was posted by Cursor Bugbot.
+Bugbot is an automated reviewer, not a KubeRay maintainer, and it is recorded separately for that
+reason. It raised one medium-severity finding, "Fallback skips resolved session path", against
+`historyserver/pkg/collector/logcollector/runtime/logcollector/collector.go`. The sequence it
+described was investigated rather than accepted on sight, and it turned out to be a real
+lifecycle bug whose consequence was worse than the report suggested:
+
+1. `PollActiveSessionChanges` seeds `sessionTransition.dir` with the symlink-resolved form of the
+   configured `SessionDir`, and `advanceSession` compares later observations against it by string.
+2. The fallback taken when the initial `session_latest` resolution fails assigned the raw
+   `SessionDir` instead, so two spellings of one live directory compared unequal.
+3. A focused regression test written against the unmodified branch reproduced the failure and
+   showed the damage: the poller logged a session change, **relocated the live session's `logs/`
+   directory into `prev-logs` while Ray was still writing to it**, and cleared the verified node
+   identity. The rotated collector was left running over a tree that had been moved.
+4. The two spellings are reachable in practice because `utils.GetSessionDir` falls back to
+   `os.Readlink`, which resolves only the `session_latest` link and leaves any symlinked component
+   above it in place.
+5. The correction reuses the already-resolved `startupDir` for the fallback, so its value is always
+   the string `st.dir` holds. No package-wide path canonicalisation was added. Genuine transitions
+   are unaffected: the fallback is reachable only when there is no resolvable evidence of any
+   session, and the first tick that resolves `session_latest` observes any real change.
+6. The regression test passes after the fix, and the race suite, `go vet` and `go build` were
+   re-run clean before the change was committed.
+7. The fix was committed as `5b8db49a` and pushed to PR #5101, and a reply on the Bugbot review
+   thread confirmed the finding and described the correction.
+
+If review feedback arrives from a maintainer on the issue or the pull request, it will be answered
+there and recorded in this section with the commit that responds to it.
+
+### Known limitations
+
+- The cluster validation is a manual Kind and MinIO run, not an automated end-to-end test and not
+  a production cloud-storage validation. It exercises MinIO's S3-compatible API rather than S3,
+  GCS, Azure Blob or Aliyun OSS.
+- That run was performed at `129e0102`. The retention accounting in `2d45c6f0` and the session
+  fallback fix in `5b8db49a` are covered by package and race tests only.
+- Capture depends on the collector being able to hard-link Ray's files, which requires both on the
+  same filesystem and adequate permissions. The default KubeRay manifest satisfies both, since the
+  containers share one `emptyDir`; a custom image whose Ray user differs from the collector's UID
+  degrades to a warning and a skip rather than a failure.
+- Anything still unsent when the bounded shutdown drain expires stays on the staging volume. That
+  is recoverable across a collector restart inside a surviving pod, but not across pod deletion,
+  because `/tmp/ray` is an `emptyDir` that dies with the pod.
+- While intake is paused at the high-water mark, segments Ray rotates away are not captured. That
+  is a deliberate trade against unbounded disk retention, not an oversight.
+- Rotated objects are served by the archived object-storage route. The live log route proxies
+  Ray's dashboard and therefore does not know these filenames.
+
+---
+
+## Learnings and Reflections
+
+### Technical Skills Gained
+
+The most transferable thing I learned is that a hard link is a reference-counting tool, and that
+`nlink` is a readable answer to "who is keeping these bytes alive?". The whole design turns on
+that: a link is a second reference to an inode, so creating one makes the data survive both the
+rename and the unlink, and `nlink == 1` is a precise, checkable statement that the collector is
+now the only holder. That single fact decides when a capture is safe to release, when the
+collector is responsible for disk, and how a restart rebuilds its state from the filesystem with
+nothing persisted.
+
+I also learned to build a single-owner concurrency model rather than reaching for mutexes. All
+collector state lives on one goroutine, and every external question — a snapshot, statistics, a
+forced reconcile — is a channel round trip. That makes "look up the inode, create the link,
+register the capture" indivisible without any locking, and it is what let the slow, uncancelable
+part, the object-store write, be pushed onto a worker without letting storage latency delay
+discovery. Where locks were unavoidable, in the supervisor, I learned to write the ordering down
+as an invariant and keep the lock off every path that waits.
+
+Two smaller skills. Classifying failures by the operation that produced them rather than by the
+error value: a missing logs directory and a missing staging link are both `fs.ErrNotExist` and
+are opposites, so retryability has to be marked at the point of failure. And pairing event-driven
+discovery with reconciliation, since a watch cannot see what a directory already contained and
+`fsnotify` drops events under load, so neither mechanism alone is sufficient.
+
+On the Kubernetes side I got a lot more comfortable debugging a cluster from the bottom up: reading
+kubelet and containerd logs when no pod was ever created, checking `/proc/self/status` for kernel
+capabilities inside a node, and understanding how emulation changes what a container runtime can
+actually do.
+
+### Challenges Overcome
+
+The design I posted publicly was not strong enough, and I had to say so. A filename-based periodic
+scanner cannot solve this problem: it is not only that fast rotation outruns the scan, it is that
+the filename is a reused slot, so the scanner both misses content it has never uploaded and
+re-uploads content it already has. Replacing that with hard-link pinning meant abandoning the
+approach I had already described in public.
+
+Ray reusing numbered backup paths produced a subtler trap. The obvious implementation reads the
+inode of `raylet.out.1`, links it, and records what it read — but rotation can replace that file
+between the read and the link, leaving the staging link pinning one inode while the index records
+another. The correction was to read the inode back from the link that was actually created, and to
+remove the tempting dedup shortcut before linking, since an early return could skip a generation
+that had just replaced the one being examined.
+
+Session and node transitions took longer than the capture logic. The pre-existing relocation helper
+takes a single node ID and stamps every inactive session directory with it, which files a session's
+logs under a node that never wrote them, so each outgoing session had to be tracked with the node it
+actually ran on and relocated individually before any broad sweep runs.
+
+The amd64-under-emulation cluster failure cost real time and turned out not to be my code at all;
+the fix was to stop trying to make the emulated environment work and rebuild natively on arm64.
+
+The last one was found by re-reading my own work rather than by a test: backpressure was measuring
+the wrong thing. Distinguishing bytes the collector has merely pinned from bytes the collector alone
+is keeping allocated was the difference between a limit that protects the node and a limit that
+would have quietly disabled the feature during normal operation.
+
+The automated review after submission reinforced a habit worth keeping: turning a reviewer's claim
+into a failing regression test before editing anything proved the bug was real, showed it was worse
+than reported — the live session's logs were actually relocated — and left behind a test that keeps
+it fixed.
+
+### What I Would Do Differently
+
+**Identify the disk-retention invariant on day one.** I knew from the beginning that pinning a link
+prevents reclamation — I wrote it down in Phase II — but I treated it as a caveat rather than as an
+invariant that needed a precise definition. If I had asked "exactly which bytes exist because of
+this feature?" before writing the accounting, the `StagedBytes` versus `RetainedBytes` split would
+have been the first design rather than the last commit.
+
+**Stand up the native-architecture integration environment before writing the implementation.** I
+built the cluster after the code was largely done, and lost a working session to an emulation
+limitation that had nothing to do with the change. Bringing up the environment early would have
+surfaced that at a point where it cost nothing.
+
+**Design the deterministic proof earlier.** The marker workload — unique run ID, role, sequence
+number, sizes chosen so the rotation arithmetic is exact — is what turned "rotated logs are
+collected" into "20 of 25 rotations per node existed only in object storage." I built that late.
+Designing the evidence first would have given me a sharper target throughout, and would have made
+the intermediate cluster runs far more informative than "some objects appeared."
+
+**Raise the mechanism change on the issue when I made it, not after.** I posted a scanner design,
+then changed to hard-link pinning on engineering grounds, and the public thread still shows only the
+original. The reasoning is sound and it is documented here and in the pull request, but the
+maintainers who asked for a design first deserved to see the revision at the point it happened. The
+lesson from Contribution 1 was to open a scoping conversation before implementing; the version of
+that lesson I still need is to keep the conversation open *while* implementing.
 
 ---
 
 ## Resources Used
 
 - KubeRay issue #4830: https://github.com/ray-project/kuberay/issues/4830
+- KubeRay PR #5101 (this contribution): https://github.com/ray-project/kuberay/pull/5101
 - KubeRay issue #4825: https://github.com/ray-project/kuberay/issues/4825
 - KubeRay PR #4983: https://github.com/ray-project/kuberay/pull/4983
 - KubeRay repository: https://github.com/ray-project/kuberay

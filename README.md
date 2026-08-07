@@ -14,6 +14,6 @@
 
 ## Contribution 3
 **Project:** KubeRay<br>
-**Issue:** Collect rotated logs<br>
-**Status:** Phase I complete; design shared publicly on the issue with the author and project members tagged; Phase II investigation beginning<br>
+**Issue:** [#4830](https://github.com/ray-project/kuberay/issues/4830) — Collect rotated logs<br>
+**Status:** Upstream PR opened, awaiting review ([PR #5101](https://github.com/ray-project/kuberay/pull/5101))<br>
 **Details:** [Contribution 3 README](contributions/03-kuberay-4830.md)
